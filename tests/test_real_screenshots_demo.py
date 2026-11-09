@@ -371,6 +371,7 @@ def test_scenario_2_15_question_burst_rate_limit_stress_test():
     - Verifies per-call latency < 2500ms.
     """
     client = TestClient(app)
+    client.post("/reset-state")
 
     questions = [
         # 1. Physics MCQ

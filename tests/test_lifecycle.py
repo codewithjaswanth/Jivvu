@@ -257,7 +257,12 @@ class TestStealthAndPopupElimination:
         payload = json.dumps({"action": "PING"}).encode("utf-8")
         header = struct.pack("<I", len(payload))
         t0 = time.time()
-        proc = subprocess.run([str(exe_path)], input=header + payload, capture_output=True, check=False, timeout=3.0)
+        try:
+            proc = subprocess.run([str(exe_path)], input=header + payload, capture_output=True, check=False, timeout=3.0)
+        except OSError as e:
+            if getattr(e, "winerror", None) == 4551 or "4551" in str(e):
+                pytest.skip("Blocked by Windows Application Control policy")
+            raise
         elapsed = time.time() - t0
         assert proc.returncode == 0, f"native_host_win.exe returned code {proc.returncode}"
         assert len(proc.stdout) >= 4, f"Output too short: {proc.stdout}"

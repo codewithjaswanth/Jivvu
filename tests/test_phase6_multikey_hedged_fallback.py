@@ -668,15 +668,17 @@ def test_6_tier_hierarchy_and_two_wave_cascade():
 
     # 4. Two-Wave Cascade: Case B - Wave 1 S-Tier models fail -> Wave 2 triggers immediately
     wave2_dispatched = False
+    pri_a_called = False
 
     async def mock_call_s_fails(client, provider, model, messages, api_key, timeout_ms, q_type, options, *args, **kwargs):
-        nonlocal wave2_dispatched
-        if model == cfg["primary_a"]["model"] or model == "primary_a":
+        nonlocal wave2_dispatched, pri_a_called
+        if (model == cfg["primary_a"]["model"] or model == "primary_a") and not pri_a_called:
+            pri_a_called = True
             return ('{"answer": "A"}', parsed_a, norm_a, 50.0, None)
         if model == cfg["primary_b"]["model"] or model == "primary_b":
             return ('{"answer": "B"}', parsed_b, norm_b, 50.0, None)
-        # S-Tier Wave 1 models and Groq arbiter fail immediately
-        if "gpt-oss-20b" in model or "nemotron-3-ultra-550b" in model or "nemotron-3-super-120b" in model:
+        # S-Tier Wave 1 models and Groq/Gemini arbiter fail immediately
+        if "gpt-oss-20b" in model or "gemini" in model or "nemotron-3-ultra-550b" in model or "nemotron-3-super-120b" in model:
             return (None, None, None, 30.0, "RATE_LIMIT_429")
         # Wave 2 A-tier model succeeds
         if "gemma-4-26b" in model:

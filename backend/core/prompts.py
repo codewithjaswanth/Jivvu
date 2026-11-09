@@ -115,6 +115,55 @@ Answer format:
 - 'text': concise factual string (e.g. "0").
 - 'code': complete, optimal, executable source code matching starter signature."""
 
+APTITUDE_REASONING_PROMPT_SECTION = """9. QUANTITATIVE, LOGICAL & VISUAL APTITUDE VERIFICATION DIRECTIVE:
+A. Quantitative Aptitude Rules:
+   - Permutations & Combinations / Probability:
+     * Explicitly count total characters/items N and duplicate frequencies f1, f2, ... -> formula: N! / (f1! * f2! ...).
+     * Check whether repetition of digits/items is allowed or restricted.
+     * Check circular arrangement: (N-1)! for distinct objects, or (N-1)!/2 if clockwise and anti-clockwise are identical (necklaces/garlands).
+     * For probability, calculate both favorable outcomes |E| and total sample space |S|, reducing the fraction to lowest terms.
+   - Time, Work & Pipes / Speed, Time & Distance:
+     * Convert individual rates into LCM unit-work or efficiency per hour/day.
+     * For relative speed: S1 + S2 if moving in opposite directions, |S1 - S2| if moving in the same direction.
+     * Unit conversion: km/h * 5/18 = m/s; m/s * 18/5 = km/h.
+     * For trains crossing platforms/bridges: Total Distance = Length_train + Length_platform.
+   - Clocks, Calendars & Ages:
+     * Clock angle at H hours and M minutes = |30*H - 5.5*M| degrees. If the resulting angle theta is not among the options, check reflex angle (360 - theta).
+     * Calendars: Normal year = 1 odd day; Leap year = 2 odd days; 100 years = 5 odd days; 400 years = 0 odd days. Compute total odd days mod 7.
+     * Ages: Set up algebraic equations for present age (x), past age (x - y), and future age (x + z) explicitly.
+   - Number Series & Missing Numbers:
+     * Systematically test: (1) First differences, (2) Second differences, (3) Alternating series (two interleaved patterns), (4) Squares/Cubes with offsets (n^2 +/- k, n^3 +/- k), (5) Multiplicative/Prime progressions before selecting an answer.
+
+B. Logical & Verbal Reasoning Rules:
+   - Syllogisms & Statements:
+     * Evaluate strict Venn diagram set containment (Universal affirmative 'All A are B', Universal negative 'No A is B', Particular 'Some A are B').
+     * NEVER assume the converse of 'All A are B' unless explicitly proven. Only validate conclusions that are true in ALL possible valid Venn diagrams.
+   - Seating Arrangements, Blood Relations & Directions:
+     * Step-by-step coordinate/position map in 'reason'.
+     * Language reference rule: 'who/which/whom' refers strictly to the immediately preceding person/noun; 'and/but/while' refers back to the primary subject.
+     * For Blood Relations: map generation levels (+1 parent, 0 sibling/spouse, -1 child) and gender markers (+ male, - female) explicitly before determining relationship.
+     * For Directions: trace net vector displacement (North-South sum, East-West sum) and apply Pythagoras theorem for shortest distance.
+
+C. Visual Aptitude & Diagram Rules:
+   - Counting Figures: Count base segments, horizontal dividing lines, and inscribed layers. Cross-check formula count against manual component partition.
+   - Non-Verbal & Pattern Completion: Track asymmetric landmarks (arrows, shaded quadrants, dots, notches) across 90/180-degree rotations, mirror inversions (horizontal flip), or water reflections (vertical flip).
+   - Paper Folding & Cutting: Unfold step-by-step in reverse chronological order, reflecting punch marks symmetrically across fold lines.
+
+D. Strict Option Verification:
+   - Before emitting 'answer', confirm that the calculated value or derived statement matches the exact option text at that letter (A, B, C, D).
+   - If the exact calculated value is formatted or simplified differently (e.g., 2/36 vs 1/18, 0.5 vs 50%, or simplified algebraic forms), select the mathematically equivalent option."""
+
+APTITUDE_KEYWORDS_REGEX = re.compile(
+    r"\b(triangle[s]?|square[s]?|figure[s]?|diagram[s]?|image[s]?|mirror|water|paper|fold|dice|cube[s]?|venn|chart[s]?|graph[s]?|table[s]?|"
+    r"ratio[s]?|proportion[s]?|percentage[s]?|profit|loss|interest|discount|average|mixture[s]?|alligation|"
+    r"time|work|pipe[s]?|cistern[s]?|speed|distance|train[s]?|boat[s]?|stream[s]?|permutation[s]?|combination[s]?|probability|"
+    r"arrange|arrangement[s]?|ways?|seated|circle|row[s]?|blood|relations?|related|daughter|mother|father|brother|sister|son|photograph|"
+    r"directions?|north|south|east|west|walks?|turns?|facing|syllogisms?|statements?|conclusions?|assumptions?|"
+    r"clock[s]?|calendar[s]?|age[s]?|series|missing|odd|numbers?|remainder[s]?|divisible|hcf|lcm|log|AP|GP|"
+    r"day\s+of\s+the\s+week|leap\s+year|odd\s+days?)\b",
+    re.IGNORECASE,
+)
+
 SYSTEM_PROMPT = (
     BASE_SYSTEM_PROMPT
     + "\n\n"
@@ -125,6 +174,8 @@ SYSTEM_PROMPT = (
     + ORDERING_PROMPT_SECTION
     + "\n\n"
     + GEOMETRY_PROMPT_SECTION
+    + "\n\n"
+    + APTITUDE_REASONING_PROMPT_SECTION
 )
 
 
@@ -155,6 +206,10 @@ def get_adaptive_system_prompt(q_type: str = "mcq", question: str = "", has_imag
     geom_keywords = ("triangle", "square", "rectangle", "grid", "figure", "count the number", "diameter", "binary tree", "tree view", "top view", "bottom view")
     if has_image or any(k in q_lower for k in geom_keywords):
         sections.append(GEOMETRY_PROMPT_SECTION)
+
+    # Quantitative, Logical & Visual Aptitude Pack
+    if has_image or bool(APTITUDE_KEYWORDS_REGEX.search(question or "")):
+        sections.append(APTITUDE_REASONING_PROMPT_SECTION)
 
     sections.append("""Answer format:
 - 'mcq': synthetic letter of best option (e.g. "A").

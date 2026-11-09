@@ -14,11 +14,14 @@ from pydantic import BaseModel, Field
 from backend.core.key_pool import (
     TIER_WEIGHT,
     extract_model_meta,
+    get_healthy_gemini_keys,
+    get_next_gemini_key,
     get_next_groq_key,
     get_next_openrouter_key,
     is_model_quarantined,
     is_provider_in_cooldown,
     is_valid_chat_model,
+    load_gemini_api_keys,
     load_groq_api_keys,
 )
 from backend.core.normalizer import (
@@ -27,7 +30,7 @@ from backend.core.normalizer import (
 )
 from backend.core.parser import ParsedLLMResponse
 from backend.core.prompts import build_arbiter_messages
-from backend.core.providers import ModelResponse, call_model_with_budget_retry
+from backend.core.providers import ModelResponse, call_gemini_primary, call_model_with_budget_retry
 
 
 def _dispatch(name: str, fallback_fn: Any) -> Any:
@@ -235,6 +238,98 @@ async def run_groq_arbiter_fallback(
         latency_ms=elapsed_ms,
         models_called=models_called,
         agreement_details={"groq_arbiter": details},
+    )
+    return sol, models_called, details
+
+
+async def run_gemini_arbiter_fallback(
+    client: httpx.AsyncClient,
+    subject: str,
+    q_type: str,
+    question: str,
+    options: List[str],
+    candidate_a: Optional[str] = None,
+    candidate_b: Optional[str] = None,
+    arbiter_model: str = "gemini-3.8-flash",
+    timeout_ms: float = 3500.0,
+    gemini_key: Optional[str] = None,
+    language: Optional[str] = None,
+    starter_code: Optional[str] = None,
+    max_tokens: int = 2048,
+    image_data: Optional[str] = None,
+) -> Tuple[Optional[SolverResponse], List[str], Dict[str, Any]]:
+    """
+    Run fast Gemini Arbiter tie-breaker with deep verification (thinkingBudget=2048).
+    Resolves ties between Primary A and Primary B with high reasoning fidelity.
+    """
+    _next_gk_fn = _dispatch("get_next_gemini_key", get_next_gemini_key)
+    _healthy_gk_fn = _dispatch("get_healthy_gemini_keys", get_healthy_gemini_keys)
+    if not gemini_key:
+        gemini_key = _next_gk_fn()
+        if not gemini_key:
+            g_keys = _healthy_gk_fn()
+            gemini_key = g_keys[0] if g_keys else ""
+    if not gemini_key:
+        return None, [], {"error": "NO_GEMINI_KEY", "success": False}
+
+    t0 = time.perf_counter()
+    models_called = [f"gemini_arbiter:{arbiter_model}"]
+    arb_messages = build_arbiter_messages(
+        subject=subject,
+        q_type=q_type,
+        question=question,
+        options=options,
+        candidate_a=candidate_a,
+        candidate_b=candidate_b,
+        language=language,
+        starter_code=starter_code,
+        image_data=image_data,
+    )
+    _call_gemini_fn = _dispatch("call_gemini_primary", call_gemini_primary)
+    resp_arb, el_arb, err_arb = await _call_gemini_fn(
+        client=client,
+        provider="gemini",
+        model=arbiter_model,
+        messages=arb_messages,
+        api_key=gemini_key,
+        timeout_ms=timeout_ms,
+        q_type=q_type,
+        options=options,
+        language=language,
+        starter_code=starter_code,
+        max_tokens=max_tokens,
+    )
+    norm_arb = getattr(resp_arb, "norm", None) if resp_arb else None
+    succ_arb = bool(not err_arb and resp_arb and norm_arb)
+    details = {
+        "model": arbiter_model,
+        "success": succ_arb,
+        "error": err_arb,
+        "canonical_key": norm_arb.canonical_key if norm_arb else None,
+        "selected_indices": norm_arb.selected_indices if norm_arb else None,
+        "canonical_keys": norm_arb.canonical_keys if norm_arb else None,
+        "reason": getattr(resp_arb, "reason", None) if resp_arb else None,
+        "latency_ms": el_arb,
+    }
+    if not succ_arb or not norm_arb:
+        return None, models_called, details
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    sol = SolverResponse(
+        status="OK",
+        confidence_tier="MEDIUM_TIEBREAKER_AGREE",
+        canonical_key=norm_arb.canonical_key,
+        selected_index=norm_arb.selected_index,
+        selected_text=norm_arb.selected_text,
+        selected_indices=norm_arb.selected_indices,
+        selected_texts=norm_arb.selected_texts,
+        canonical_keys=norm_arb.canonical_keys,
+        permutation_indices=norm_arb.permutation_indices,
+        ordered_texts=norm_arb.ordered_texts,
+        reason=getattr(resp_arb, "reason", "Gemini 3.8 Flash Arbiter tiebreaker derivation."),
+        latency_ms=elapsed_ms,
+        models_called=models_called,
+        agreement_details={"gemini_arbiter": details},
     )
     return sol, models_called, details
 

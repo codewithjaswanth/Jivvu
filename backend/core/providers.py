@@ -18,19 +18,26 @@ from pydantic import BaseModel
 
 from backend.core.key_pool import (
     extract_model_meta,
+    get_healthy_gemini_keys,
     get_healthy_groq_keys,
     get_model_cooldown_remaining,
+    get_next_gemini_key,
     get_next_groq_key,
     get_ordered_fallback_pool,
+    is_gemini_key_available,
     is_key_model_quarantined,
     is_valid_chat_model,
     load_api_keys,
+    load_gemini_api_keys,
     load_models_config,
     quarantine_key,
     quarantine_model,
+    record_gemini_key_error,
     record_model_usage,
     record_rate_limit_headers,
+    reset_gemini_key_cooldown,
     reset_model_cooldown,
+    set_gemini_key_cooldown,
     set_key_model_quarantine,
     set_model_cooldown,
     set_provider_cooldown,
@@ -87,6 +94,70 @@ def get_shared_async_client() -> httpx.AsyncClient:
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
         timeout=httpx.Timeout(connect=2.0, read=3.5, write=2.0, pool=2.0),
     )
+
+
+APTITUDE_REGEX = re.compile(
+    r"\b(triangle[s]?|square[s]?|figure[s]?|diagram[s]?|image[s]?|mirror|water|paper|fold|dice|cube[s]?|venn|chart[s]?|graph[s]?|table[s]?|"
+    r"ratio[s]?|proportion[s]?|percentage[s]?|profit|loss|interest|discount|average|mixture[s]?|alligation|"
+    r"time|work|pipe[s]?|cistern[s]?|speed|distance|train[s]?|boat[s]?|stream[s]?|permutation[s]?|combination[s]?|probability|"
+    r"arrange|arrangement[s]?|ways?|seated|circle|row[s]?|blood|relations?|related|daughter|mother|father|brother|sister|son|photograph|"
+    r"directions?|north|south|east|west|walks?|turns?|facing|syllogisms?|statements?|conclusions?|assumptions?|"
+    r"clock[s]?|calendar[s]?|age[s]?|series|missing|odd|numbers?|remainder[s]?|divisible|hcf|lcm|log|AP|GP|"
+    r"day\s+of\s+the\s+week|leap\s+year|odd\s+days?)\b",
+    re.IGNORECASE,
+)
+
+
+def normalize_gemini_model(model: str) -> str:
+    """Normalize gemini-3.8-flash and models/gemini-3.8-flash to canonical model slug."""
+    m = (model or "").strip()
+    if m.startswith("models/"):
+        m = m[len("models/"):]
+    if not m or m.lower() in ("gemini", "default"):
+        return "gemini-3.8-flash"
+    return m
+
+
+CODE_DSA_SQL_REGEX = re.compile(
+    r"\b(dsa|sql|complexity|pointer|array|stack|queue|linked\s*list|tree|graph|algorithm|"
+    r"python|javascript|java|cpp|c\+\+|query|database|select\s+from|big\s*o|def\s+\w+|function\s*\()\b",
+    re.IGNORECASE,
+)
+
+
+def compute_gemini_thinking_budget(q_type: str = "mcq", question: str = "", has_image: bool = False) -> int:
+    """
+    Compute adaptive thinking budget for Gemini 3.8 Flash:
+    - Deep Aptitude & Vision Tier (thinkingBudget = 2048): has_image is True, OR q_type == "code",
+      OR question matches aptitude/math/logic patterns.
+    - Analytical Tier (thinkingBudget = 1024): q_type in ("multi", "order", "text")
+      or question contains code/DSA/SQL keywords.
+    - Fast Recall Tier (thinkingBudget = 128): Simple conceptual single-choice MCQs (~450-650ms).
+    """
+    q_type_clean = (q_type or "").strip().lower()
+    q_str = str(question or "")
+
+    if has_image or q_type_clean == "code":
+        return 2048
+
+    if q_type_clean == "order":
+        q_order_check = re.sub(r"\barrange(ments?)?\b", "", q_str, flags=re.IGNORECASE)
+        if bool(APTITUDE_REGEX.search(q_order_check)):
+            return 2048
+        return 1024
+
+    if q_type_clean in ("multi", "multi_mcq", "multiselect", "text"):
+        if bool(APTITUDE_REGEX.search(q_str)):
+            return 2048
+        return 1024
+
+    if bool(APTITUDE_REGEX.search(q_str)):
+        return 2048
+
+    if bool(CODE_DSA_SQL_REGEX.search(q_str)):
+        return 1024
+
+    return 128
 
 
 async def call_single_completion(
@@ -183,17 +254,72 @@ async def call_single_completion(
             "max_tokens": effective_max_tokens,
         }
     elif provider == "gemini":
-        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        model_clean = normalize_gemini_model(model)
+        # Extract question text and image presence from messages
+        q_text = ""
+        has_img = False
+        sys_instructions = []
+        user_parts = []
+
+        for msg in effective_messages:
+            role = msg.get("role", "user")
+            c = msg.get("content")
+            if role == "system":
+                if isinstance(c, str):
+                    sys_instructions.append(c)
+                elif isinstance(c, list):
+                    for p in c:
+                        if isinstance(p, dict) and p.get("text"):
+                            sys_instructions.append(p["text"])
+            else:
+                if isinstance(c, str):
+                    q_text += " " + c
+                    user_parts.append({"text": c})
+                elif isinstance(c, list):
+                    for p in c:
+                        if isinstance(p, dict):
+                            p_type = p.get("type", "")
+                            if p_type == "text" or "text" in p:
+                                t = p.get("text", "")
+                                q_text += " " + t
+                                user_parts.append({"text": t})
+                            elif p_type == "image_url" or "image_url" in p:
+                                has_img = True
+                                url_obj = p.get("image_url", {})
+                                img_url = url_obj.get("url") if isinstance(url_obj, dict) else str(url_obj)
+                                if img_url and img_url.startswith("data:"):
+                                    try:
+                                        header, b64_raw = img_url.split(",", 1)
+                                        mime = header.split(";")[0].replace("data:", "").strip()
+                                        user_parts.append({"inlineData": {"mimeType": mime or "image/png", "data": b64_raw.strip()}})
+                                    except Exception:
+                                        pass
+
+        thinking_budget = compute_gemini_thinking_budget(question=q_text, has_image=has_img)
+        safe_max_tokens = max(2048, thinking_budget + 1024, max_tokens)
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_clean}:generateContent?key={api_key}"
         headers = {
-            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
         }
+        gen_config = {
+            "temperature": 0.1,
+            "responseMimeType": "application/json",
+            "maxOutputTokens": safe_max_tokens,
+        }
+        is_thinking_model = any(k in model_clean.lower() for k in ("3.8-flash", "2.5-flash", "thinking"))
+        if is_thinking_model:
+            gen_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+
         payload = {
-            "model": model,
-            "messages": effective_messages,
-            "temperature": 0.0,
-            "max_tokens": effective_max_tokens,
+            "contents": [{"role": "user", "parts": user_parts if user_parts else [{"text": q_text or "Hello"}]}],
+            "generationConfig": gen_config,
         }
+        if sys_instructions:
+            payload["systemInstruction"] = {
+                "parts": [{"text": "\n\n".join(sys_instructions)}]
+            }
     else:
         return None, 0.0, f"Unsupported provider: {provider}"
 
@@ -221,6 +347,28 @@ async def call_single_completion(
 
         if response.status_code == 200:
             data = response.json()
+            if provider == "gemini":
+                candidates = data.get("candidates", [])
+                if candidates:
+                    cand = candidates[0]
+                    content_obj = cand.get("content", {})
+                    parts = content_obj.get("parts", [])
+                    # Multi-part thought filtering: extract parts where not part.get("thought", False) first!
+                    non_thought = [
+                        p.get("text", "") for p in parts
+                        if isinstance(p, dict) and not p.get("thought", False) and p.get("text")
+                    ]
+                    if non_thought:
+                        return str("\n".join(non_thought)).strip(), elapsed_ms, None
+                    # Fallback to thought parts if no non-thought text part exists
+                    all_text_parts = [
+                        p.get("text", "") for p in parts
+                        if isinstance(p, dict) and p.get("text")
+                    ]
+                    if all_text_parts:
+                        return str("\n".join(all_text_parts)).strip(), elapsed_ms, None
+                    return None, elapsed_ms, "EMPTY_CANDIDATE_PARTS"
+
             choices = data.get("choices", [])
             if choices and "message" in choices[0]:
                 msg = choices[0]["message"]
@@ -235,6 +383,36 @@ async def call_single_completion(
             if provider == "openrouter":
                 _q_mod(model, 60.0)
             return None, elapsed_ms, "EMPTY_CHOICES"
+        elif provider == "gemini" and response.status_code == 400 and "thinkingConfig" in payload.get("generationConfig", {}):
+            # Upstream rejected thinkingConfig -> retry once immediately without thinkingConfig
+            retry_payload = dict(payload)
+            retry_gen_config = dict(payload["generationConfig"])
+            retry_gen_config.pop("thinkingConfig", None)
+            retry_payload["generationConfig"] = retry_gen_config
+            rem_timeout = max(0.5, timeout_sec - (time.perf_counter() - t0))
+            if rem_timeout > 0.2:
+                try:
+                    retry_resp = await asyncio.wait_for(
+                        client.post(url, headers=headers, json=retry_payload, timeout=rem_timeout),
+                        timeout=rem_timeout + 0.5,
+                    )
+                    if retry_resp.status_code == 200:
+                        retry_data = retry_resp.json()
+                        cands = retry_data.get("candidates", [])
+                        if cands:
+                            c_parts = cands[0].get("content", {}).get("parts", [])
+                            non_th = [p.get("text", "") for p in c_parts if isinstance(p, dict) and not p.get("thought", False) and p.get("text")]
+                            if non_th:
+                                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                                return str("\n".join(non_th)).strip(), elapsed_ms, None
+                except Exception:
+                    pass
+            return None, elapsed_ms, f"HTTP_400: {response.text[:150]}"
+        elif response.status_code == 503:
+            if provider == "gemini":
+                _rec_gemini_err = _dispatch("record_gemini_key_error", record_gemini_key_error)
+                _rec_gemini_err(api_key, 503)
+            return None, elapsed_ms, f"HTTP_503: {response.text[:150]}"
         elif response.status_code == 429:
             retry_after_hdr = response.headers.get("retry-after")
             try:
@@ -293,9 +471,14 @@ async def call_single_completion(
                 if is_provider_wide:
                     _set_p_cd("openrouter", 8.0)
             elif provider == "gemini":
-                _set_m_cd("gemini", model, min(retry_after_sec, 15.0))
+                _rec_gemini_err = _dispatch("record_gemini_key_error", record_gemini_key_error)
+                _rec_gemini_err(api_key, 429, retry_after_sec)
+                _set_m_cd("gemini", model, min(retry_after_sec, 8.0))
             return None, elapsed_ms, "RATE_LIMIT_429"
         elif response.status_code in (401, 402, 403):
+            if provider == "gemini":
+                _rec_gemini_err = _dispatch("record_gemini_key_error", record_gemini_key_error)
+                _rec_gemini_err(api_key, response.status_code)
             _q_key(api_key, response.status_code)
             return None, elapsed_ms, f"HTTP_{response.status_code}: {response.text[:150]}"
         elif provider == "groq" and response.status_code in (400, 404, 429):
@@ -420,7 +603,14 @@ async def call_model_with_budget_retry(
     norm: Optional[NormalizedAnswer] = None
 
     if err:
-        if "429" not in err and "TIMEOUT" not in err:
+        if provider == "gemini" and ("503" in err or "429" in err or "RATE_LIMIT" in err):
+            _next_gemini_key_fn = _dispatch("get_next_gemini_key", get_next_gemini_key)
+            alt_key = _next_gemini_key_fn(exclude=api_key)
+            if alt_key and alt_key != api_key:
+                rem_timeout = timeout_ms - ((time.perf_counter() - t_start) * 1000.0)
+                if rem_timeout > 300.0:
+                    raw, el2, err = await _call_fn(client, provider, model, messages, alt_key, rem_timeout, max_tokens=max_tokens)
+        elif "429" not in err and "TIMEOUT" not in err:
             elapsed_so_far = (time.perf_counter() - t_start) * 1000.0
             if elapsed_so_far < 700.0:
                 await asyncio.sleep(0.1)
@@ -523,6 +713,146 @@ async def call_groq_primary(
 
     _reset_cd_fn("groq", model)
     return ModelResponse(answer=parsed.answer, reason=parsed.reason, raw_text=raw or "", norm=norm), el, None
+
+
+async def call_gemini_primary(
+    client: httpx.AsyncClient,
+    provider: str,
+    model: str,
+    messages: List[Dict[str, Any]],
+    api_key: str,
+    timeout_ms: float,
+    q_type: str,
+    options: List[str],
+    language: Optional[str] = None,
+    starter_code: Optional[str] = None,
+    max_tokens: int = 2048,
+) -> Tuple[Optional[ModelResponse], float, Optional[str]]:
+    """
+    Call primary Gemini model (gemini-3.8-flash) with instant key failover across all 4 healthy keys.
+    Returns (ModelResponse, elapsed_ms, error).
+    """
+    _budget_fn = _dispatch("call_model_with_budget_retry", call_model_with_budget_retry)
+    _next_gk_fn = _dispatch("get_next_gemini_key", get_next_gemini_key)
+    _healthy_gk_fn = _dispatch("get_healthy_gemini_keys", get_healthy_gemini_keys)
+    _rec_gemini_err = _dispatch("record_gemini_key_error", record_gemini_key_error)
+
+    if not api_key:
+        api_key = _next_gk_fn()
+    (raw, parsed, norm, el, err) = await _budget_fn(
+        client, provider, model, messages, api_key, timeout_ms, q_type, options,
+        max_tokens=max_tokens, language=language, starter_code=starter_code,
+    )
+
+    if err and ("503" in err or "429" in err or "401" in err or "403" in err or "RATE_LIMIT" in err):
+        status_code = 503 if "503" in err else (429 if ("429" in err or "RATE_LIMIT" in err) else 403)
+        _rec_gemini_err(api_key, status_code)
+        healthy_keys = _healthy_gk_fn()
+        tried_keys = {api_key}
+        for alt_key in healthy_keys:
+            if alt_key in tried_keys:
+                continue
+            tried_keys.add(alt_key)
+            rem_timeout = max(300.0, timeout_ms - el)
+            if rem_timeout < 400.0:
+                break
+            (raw, parsed, norm, el2, err) = await _budget_fn(
+                client, provider, model, messages, alt_key, rem_timeout, q_type, options,
+                max_tokens=max_tokens, language=language, starter_code=starter_code,
+            )
+            el += el2
+            if not err and parsed and norm:
+                break
+
+    if err or not parsed:
+        return None, el, err
+
+    return ModelResponse(answer=parsed.answer, reason=parsed.reason, raw_text=raw or "", norm=norm), el, None
+
+
+async def call_gemini_with_staggered_hedge(
+    client: httpx.AsyncClient,
+    model: str,
+    messages: List[Dict[str, Any]],
+    api_key: str,
+    timeout_ms: float,
+    q_type: str,
+    options: List[str],
+    language: Optional[str] = None,
+    starter_code: Optional[str] = None,
+    max_tokens: int = 2048,
+    hedge_after_ms: float = 2200.0,
+) -> Tuple[Optional[ModelResponse], float, Optional[str]]:
+    """
+    Launch Gemini primary request. If it does not complete within hedge_after_ms (2200ms),
+    launch a staggered hedge request on Key 2 (or Groq llama-3.3-70b-versatile) and take
+    whichever finishes first, cancelling the slower task.
+    """
+    t0 = time.perf_counter()
+    _gemini_fn = _dispatch("call_gemini_primary", call_gemini_primary)
+    _groq_fn = _dispatch("call_groq_primary", call_groq_primary)
+    _next_gk_fn = _dispatch("get_next_gemini_key", get_next_gemini_key)
+    _next_groq_fn = _dispatch("get_next_groq_key", get_next_groq_key)
+
+    task1 = asyncio.create_task(
+        _gemini_fn(
+            client, "gemini", model, messages, api_key, timeout_ms, q_type, options,
+            language=language, starter_code=starter_code, max_tokens=max_tokens,
+        )
+    )
+
+    hedge_sec = min(timeout_ms / 1000.0, max(0.5, hedge_after_ms / 1000.0))
+    done, pending = await asyncio.wait([task1], timeout=hedge_sec)
+
+    if task1 in done:
+        try:
+            return task1.result()
+        except Exception as ex:
+            return None, (time.perf_counter() - t0) * 1000.0, str(ex)
+
+    # Task 1 exceeded hedge_after_ms: Launch Staggered Hedge Task 2
+    rem_ms = max(500.0, timeout_ms - ((time.perf_counter() - t0) * 1000.0))
+    alt_gemini_key = _next_gk_fn(exclude=api_key)
+
+    if alt_gemini_key and alt_gemini_key != api_key:
+        task2 = asyncio.create_task(
+            _gemini_fn(
+                client, "gemini", model, messages, alt_gemini_key, rem_ms, q_type, options,
+                language=language, starter_code=starter_code, max_tokens=max_tokens,
+            )
+        )
+    else:
+        groq_k = _next_groq_fn()
+        task2 = asyncio.create_task(
+            _groq_fn(
+                client, "groq", "llama-3.3-70b-versatile", messages, groq_k, rem_ms, q_type, options,
+                language=language, starter_code=starter_code, max_tokens=max_tokens,
+            )
+        )
+
+    done2, pending2 = await asyncio.wait([task1, task2], return_when=asyncio.FIRST_COMPLETED)
+
+    first_task = list(done2)[0]
+    other_task = task2 if first_task == task1 else task1
+
+    try:
+        res, el, err = first_task.result()
+        if res and not err:
+            other_task.cancel()
+            return res, (time.perf_counter() - t0) * 1000.0, None
+    except Exception:
+        pass
+
+    # If first task errored or returned empty, wait for second task
+    try:
+        done_rem, _ = await asyncio.wait([other_task], timeout=max(0.1, rem_ms / 1000.0))
+        if other_task in done_rem:
+            res2, el2, err2 = other_task.result()
+            return res2, (time.perf_counter() - t0) * 1000.0, err2
+    except Exception as ex2:
+        return None, (time.perf_counter() - t0) * 1000.0, str(ex2)
+
+    return None, (time.perf_counter() - t0) * 1000.0, "TIMEOUT_ALL_HEDGES"
 
 
 async def download_image_as_base64_raster(image_url: str, client: Optional[httpx.AsyncClient] = None) -> Optional[str]:

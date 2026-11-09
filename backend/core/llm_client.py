@@ -50,11 +50,13 @@ from backend.core.key_pool import (
     get_healthy_gemini_keys,
     get_healthy_groq_keys,
     get_healthy_openrouter_keys,
+    get_gemini_keys,
     get_model_cooldown_remaining,
     get_next_gemini_key,
     get_next_groq_key,
     get_next_openrouter_key,
     get_ordered_fallback_pool,
+    is_gemini_key_available,
     is_key_quarantined,
     is_model_in_cooldown,
     is_model_quarantined,
@@ -67,10 +69,13 @@ from backend.core.key_pool import (
     load_openrouter_api_keys,
     quarantine_key,
     quarantine_model,
+    record_gemini_key_error,
+    reset_gemini_key_cooldown,
     reset_key_quarantine,
     reset_model_cooldown,
     reset_model_quarantine,
     reset_provider_cooldown,
+    set_gemini_key_cooldown,
     set_model_cooldown,
     set_provider_cooldown,
     GROQ_PRIORITY_BUCKETS,
@@ -82,20 +87,26 @@ from backend.core.key_pool import (
 # Re-export provider adapters, completions, and image processing
 from backend.core.providers import (
     ModelResponse,
+    call_gemini_primary,
+    call_gemini_with_staggered_hedge,
     call_groq_primary,
     call_model_with_budget_retry,
     call_single_completion,
     check_models,
+    compute_gemini_thinking_budget,
     download_image_as_base64_raster,
     extract_svg_topology_from_xml,
     get_shared_async_client,
+    normalize_gemini_model,
 )
 
 # Re-export consensus, arbiters, fixtures, and responses
 from backend.core.consensus import (
     SolverResponse,
+    are_answers_in_consensus,
     compute_multi_majority_indices,
     extract_multi_indices,
+    run_gemini_arbiter_fallback,
     run_groq_arbiter_fallback,
     run_hedged_openrouter_fallback,
     solve_offline_fixture,
@@ -254,7 +265,16 @@ async def solve_question(
 
     pri_a = config["primary_a"]
     pri_b = config["primary_b"]
-    if groq_key and pri_a.get("provider") == "groq" and pri_b.get("provider") == "groq":
+    gemini_keys = load_gemini_api_keys()
+    if pri_a.get("provider") == "gemini" and not gemini_keys and groq_keys:
+        pair_a, pair_b = select_healthy_groq_pair(groq_key)
+        if pair_a and pair_b:
+            pri_a = dict(pri_a, provider="groq", family=pair_a.get("family", "gpt-oss"), model=pair_a["model"])
+            pri_b = dict(pri_b, provider="groq", family=pair_b.get("family", "llama"), model=pair_b["model"])
+        else:
+            pri_a = dict(pri_a, provider="groq", model="openai/gpt-oss-120b")
+            pri_b = dict(pri_b, provider="groq", model="llama-3.3-70b-versatile")
+    elif groq_key and pri_a.get("provider") == "groq" and pri_b.get("provider") == "groq":
         a_model = pri_a.get("model", "")
         b_model = pri_b.get("model", "")
         known_bucket_models = {b["model"] for b in GROQ_PRIORITY_BUCKETS}
@@ -279,7 +299,7 @@ async def solve_question(
     else:
         groq_timeout_ms = float(timeouts.get("groq_parallel_timeout_ms", 4500))
         fb_timeout_ms_max = float(timeouts.get("openrouter_fallback_timeout_ms", 4500))
-        hard_budget_ms = float(timeouts.get("hard_total_budget_ms", 8000))
+        hard_budget_ms = float(timeouts.get("hard_total_budget_ms", 8500))
         s_tier_soft_ms = float(timeouts.get("s_tier_soft_escalation_ms", 1300))
         max_tokens = max(int(timeouts.get("max_tokens", 1024)), 1024)
 
@@ -324,6 +344,119 @@ async def solve_question(
     try:
         # Multimodal Vision Routing for diagram questions
         if image_data and str(image_data).strip():
+            gemini_keys = load_gemini_api_keys()
+            if gemini_keys:
+                k1 = get_next_gemini_key() or gemini_keys[0]
+                k2 = get_next_gemini_key(exclude=k1) or (gemini_keys[1] if len(gemini_keys) > 1 else k1)
+                models_called = ["vision:gemini/gemini-3.8-flash:k1", "vision:gemini/gemini-3.8-flash:k2"]
+
+                # 100% Vision-Capable Race: Primary 1 (temp 0.1) and Primary 2 (temp 0.2)
+                task_v1 = call_gemini_primary(
+                    client, "gemini", "gemini-3.8-flash", messages, k1, fb_timeout_ms_max, q_type, options,
+                    max_tokens=max_tokens, language=language, starter_code=starter_code,
+                )
+                task_v2 = call_gemini_primary(
+                    client, "gemini", "gemini-3.8-flash", messages, k2, fb_timeout_ms_max, q_type, options,
+                    max_tokens=max_tokens, language=language, starter_code=starter_code,
+                )
+                (resp_v1, el_v1, err_v1), (resp_v2, el_v2, err_v2) = await asyncio.gather(task_v1, task_v2)
+
+                norm_v1 = getattr(resp_v1, "norm", None) if resp_v1 else None
+                norm_v2 = getattr(resp_v2, "norm", None) if resp_v2 else None
+                succ_v1 = bool(not err_v1 and norm_v1)
+                succ_v2 = bool(not err_v2 and norm_v2)
+
+                # Both models succeeded
+                if succ_v1 and succ_v2:
+                    if are_answers_in_consensus(norm_v1, norm_v2, q_type):
+                        total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                        return SolverResponse(
+                            status="OK",
+                            confidence_tier="HIGH_VISION_SOLVER",
+                            canonical_key=norm_v1.canonical_key,
+                            selected_index=norm_v1.selected_index,
+                            selected_text=norm_v1.selected_text,
+                            selected_indices=norm_v1.selected_indices,
+                            selected_texts=norm_v1.selected_texts,
+                            canonical_keys=norm_v1.canonical_keys,
+                            permutation_indices=norm_v1.permutation_indices,
+                            ordered_texts=norm_v1.ordered_texts,
+                            reason=getattr(resp_v1, "reason", None) or getattr(resp_v2, "reason", "Gemini 3.8 Flash Dual-Vision high consensus derivation."),
+                            latency_ms=total_elapsed_ms,
+                            models_called=models_called,
+                            agreement_details={
+                                "vision_gemini_1": {"model": "gemini-3.8-flash", "canonical_key": norm_v1.canonical_key, "latency_ms": el_v1},
+                                "vision_gemini_2": {"model": "gemini-3.8-flash", "canonical_key": norm_v2.canonical_key, "latency_ms": el_v2},
+                            },
+                        )
+                    else:
+                        # Disagreement: invoke Arbiter (gemini-3.8-flash on Key k3)
+                        k3 = get_next_gemini_key(exclude=k1) or (gemini_keys[2] if len(gemini_keys) > 2 else k1)
+                        arb_sol, arb_m, arb_d = await run_gemini_arbiter_fallback(
+                            client=client,
+                            subject=subject,
+                            q_type=q_type,
+                            question=question,
+                            options=options,
+                            candidate_a=f"Option {norm_v1.canonical_key}: {norm_v1.selected_text}",
+                            candidate_b=f"Option {norm_v2.canonical_key}: {norm_v2.selected_text}",
+                            arbiter_model="gemini-3.8-flash",
+                            timeout_ms=fb_timeout_ms_max,
+                            gemini_key=k3,
+                            language=language,
+                            starter_code=starter_code,
+                            max_tokens=max_tokens,
+                            image_data=image_data,
+                        )
+                        if arb_sol:
+                            total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                            arb_sol.latency_ms = total_elapsed_ms
+                            arb_sol.models_called = models_called + arb_m
+                            return arb_sol
+
+                # One hit transient error/429/503 and the other succeeded -> return surviving result immediately!
+                if succ_v1 and norm_v1 and not succ_v2:
+                    total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    return SolverResponse(
+                        status="OK",
+                        confidence_tier="HIGH_VISION_SOLVER",
+                        canonical_key=norm_v1.canonical_key,
+                        selected_index=norm_v1.selected_index,
+                        selected_text=norm_v1.selected_text,
+                        selected_indices=norm_v1.selected_indices,
+                        selected_texts=norm_v1.selected_texts,
+                        canonical_keys=norm_v1.canonical_keys,
+                        permutation_indices=norm_v1.permutation_indices,
+                        ordered_texts=norm_v1.ordered_texts,
+                        reason=getattr(resp_v1, "reason", "Gemini 3.8 Flash visual solver derivation (Primary 1 survived)."),
+                        latency_ms=total_elapsed_ms,
+                        models_called=models_called,
+                        agreement_details={"vision_gemini_survivor": {"key": "k1", "latency_ms": el_v1}},
+                    )
+                if succ_v2 and norm_v2 and not succ_v1:
+                    total_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    return SolverResponse(
+                        status="OK",
+                        confidence_tier="HIGH_VISION_SOLVER",
+                        canonical_key=norm_v2.canonical_key,
+                        selected_index=norm_v2.selected_index,
+                        selected_text=norm_v2.selected_text,
+                        selected_indices=norm_v2.selected_indices,
+                        selected_texts=norm_v2.selected_texts,
+                        canonical_keys=norm_v2.canonical_keys,
+                        permutation_indices=norm_v2.permutation_indices,
+                        ordered_texts=norm_v2.ordered_texts,
+                        reason=getattr(resp_v2, "reason", "Gemini 3.8 Flash visual solver derivation (Primary 2 survived)."),
+                        latency_ms=total_elapsed_ms,
+                        models_called=models_called,
+                        agreement_details={"vision_gemini_survivor": {"key": "k2", "latency_ms": el_v2}},
+                    )
+
+                if resp_v1 and getattr(resp_v1, "reason", None):
+                    extracted_diagram_structure = resp_v1.reason
+                elif resp_v2 and getattr(resp_v2, "reason", None):
+                    extracted_diagram_structure = resp_v2.reason
+
             vision_cfg = config.get("vision", {}) if isinstance(config, dict) else {}
             tier_1_groq = vision_cfg.get("tier_1_groq", [
                 {"provider": "groq", "model": "meta-llama/llama-4-scout-17b-16e-instruct", "tier": "S", "priority": 1},
@@ -600,7 +733,7 @@ async def solve_question(
                             if not gemini_keys:
                                 continue
                             p_key = get_next_gemini_key() or gemini_keys[0]
-                            p_timeout = fb_timeout_ms_max
+                            p_timeout = float(timeouts.get("gemini_timeout_ms", 6500))
                         elif p_provider == "openrouter":
                             if not or_keys:
                                 continue
@@ -616,7 +749,23 @@ async def solve_question(
                         else:
                             models_called = [p_model]
 
-                        if p_provider == "groq":
+                        if p_provider == "gemini":
+                            resp, el, err = await call_gemini_with_staggered_hedge(
+                                client, p_model, messages, p_key, p_timeout, q_type, options,
+                                language=language, starter_code=starter_code, max_tokens=max_tokens,
+                            )
+                            if err or not resp:
+                                last_error = err
+                                continue
+                            norm = getattr(resp, "norm", None)
+                            if norm is None and resp.answer:
+                                try:
+                                    norm = normalize_answer(q_type, resp.answer, options, language=language, starter_code=starter_code)
+                                except Exception as ex:
+                                    last_error = str(ex)
+                                    continue
+                            parsed = ParsedLLMResponse(answer=resp.answer, reason=resp.reason, raw_text=getattr(resp, "raw_text", ""))
+                        elif p_provider == "groq":
                             resp, el, err = await call_groq_primary(
                                 client, p_provider, p_model, messages, p_key, p_timeout, q_type, options,
                                 language=language, starter_code=starter_code, max_tokens=max_tokens,
@@ -692,16 +841,33 @@ async def solve_question(
                 agreement_details={},
             )
         else:
-            key_a = get_next_groq_key(model=pri_a.get("model")) or groq_key
-            key_b = get_next_groq_key(exclude=key_a, model=pri_b.get("model")) or key_a
-            res_a_task = call_groq_primary(
-                client, pri_a["provider"], pri_a["model"], messages, key_a, groq_timeout_ms, q_type, options,
-                language=language, starter_code=starter_code, max_tokens=max_tokens,
-            )
-            res_b_task = call_groq_primary(
-                client, pri_b["provider"], pri_b["model"], messages, key_b, groq_timeout_ms, q_type, options,
-                language=language, starter_code=starter_code, max_tokens=max_tokens,
-            )
+            if pri_a.get("provider") == "gemini":
+                gemini_keys = load_gemini_api_keys()
+                key_a = get_next_gemini_key() or (gemini_keys[0] if gemini_keys else "")
+                res_a_task = call_gemini_with_staggered_hedge(
+                    client, pri_a["model"], messages, key_a, fb_timeout_ms_max, q_type, options,
+                    language=language, starter_code=starter_code, max_tokens=max_tokens,
+                )
+            else:
+                key_a = get_next_groq_key(model=pri_a.get("model")) or groq_key
+                res_a_task = call_groq_primary(
+                    client, pri_a["provider"], pri_a["model"], messages, key_a, groq_timeout_ms, q_type, options,
+                    language=language, starter_code=starter_code, max_tokens=max_tokens,
+                )
+
+            if pri_b.get("provider") == "gemini":
+                gemini_keys = load_gemini_api_keys()
+                key_b = get_next_gemini_key(exclude=key_a) or (gemini_keys[1] if len(gemini_keys) > 1 else (gemini_keys[0] if gemini_keys else ""))
+                res_b_task = call_gemini_with_staggered_hedge(
+                    client, pri_b["model"], messages, key_b, fb_timeout_ms_max, q_type, options,
+                    language=language, starter_code=starter_code, max_tokens=max_tokens,
+                )
+            else:
+                key_b = get_next_groq_key(exclude=key_a, model=pri_b.get("model")) or key_a
+                res_b_task = call_groq_primary(
+                    client, pri_b["provider"], pri_b["model"], messages, key_b, groq_timeout_ms, q_type, options,
+                    language=language, starter_code=starter_code, max_tokens=max_tokens,
+                )
 
             (resp_a, el_a, err_a), (resp_b, el_b, err_b) = await asyncio.gather(
                 res_a_task, res_b_task
@@ -820,8 +986,8 @@ async def solve_question(
                 agreement_details=agreement_details,
             )
 
-        is_429_b = bool(err_b and ("429" in str(err_b) or "rate" in str(err_b).lower() or "quota" in str(err_b).lower()))
-        is_429_a = bool(err_a and ("429" in str(err_a) or "rate" in str(err_a).lower() or "quota" in str(err_a).lower()))
+        is_429_b = bool(err_b and ("429" in str(err_b) or "rate" in str(err_b).lower() or "quota" in str(err_b).lower() or "timeout" in str(err_b).lower() or "503" in str(err_b) or "connection" in str(err_b).lower()))
+        is_429_a = bool(err_a and ("429" in str(err_a) or "rate" in str(err_a).lower() or "quota" in str(err_a).lower() or "timeout" in str(err_a).lower() or "503" in str(err_a) or "connection" in str(err_a).lower()))
 
         if succ_a and norm_a and not succ_b and is_429_b:
             reason_val = (parsed_a.reason if parsed_a else "") or "Primary A rescued via single-primary survival fast-path (Primary B hit 429)."
@@ -1232,7 +1398,25 @@ async def solve_question(
             ))
 
             arb_task = None
-            if groq_key and arb_timeout_ms >= 300.0:
+            gemini_keys = load_gemini_api_keys()
+            if gemini_keys and arb_timeout_ms >= 300.0:
+                k_arb = get_next_gemini_key(exclude=key_a if pri_a.get("provider") == "gemini" else None) or gemini_keys[0]
+                arb_task = asyncio.create_task(run_gemini_arbiter_fallback(
+                    client=client,
+                    subject=subject,
+                    q_type=q_type,
+                    question=question,
+                    options=options,
+                    candidate_a=cand_a_str,
+                    candidate_b=cand_b_str,
+                    arbiter_model="gemini-3.8-flash",
+                    timeout_ms=arb_timeout_ms,
+                    gemini_key=k_arb,
+                    language=language,
+                    starter_code=starter_code,
+                    max_tokens=max_tokens,
+                ))
+            elif groq_key and arb_timeout_ms >= 300.0:
                 arb_task = asyncio.create_task(run_groq_arbiter_fallback(
                     client=client,
                     subject=subject,

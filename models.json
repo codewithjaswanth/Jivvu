@@ -2,53 +2,61 @@
   "single_primary_cascade": true,
   "text_cascade": [
     {
-      "provider": "groq",
-      "model": "openai/gpt-oss-120b",
+      "provider": "gemini",
+      "model": "gemini-3.8-flash",
       "tier": "S",
-      "priority": 1
+      "priority": 1,
+      "multimodal": true
     },
     {
       "provider": "groq",
-      "model": "qwen/qwen3.8-27b",
+      "model": "openai/gpt-oss-120b",
       "tier": "S",
       "priority": 2
     },
     {
       "provider": "groq",
+      "model": "llama-3.3-70b-versatile",
+      "tier": "S",
+      "priority": 3
+    },
+    {
+      "provider": "groq",
+      "model": "qwen/qwen3.8-27b",
+      "tier": "S",
+      "priority": 4
+    },
+    {
+      "provider": "groq",
       "model": "openai/gpt-oss-20b",
       "tier": "A",
-      "priority": 3
+      "priority": 5
     },
     {
       "provider": "openrouter",
       "model": "nvidia/nemotron-3.5-super-vl:free",
       "tier": "S",
-      "priority": 4
-    },
-    {
-      "provider": "openrouter",
-      "model": "nvidia/nemotron-3.5-lightning:free",
-      "tier": "S",
-      "priority": 5
+      "priority": 6
     },
     {
       "provider": "openrouter",
       "model": "google/gemma-4-31b-it:free",
       "tier": "S",
-      "priority": 6
+      "priority": 7
     }
   ],
   "primary_a": {
-    "provider": "groq",
-    "family": "gpt-oss",
-    "model": "openai/gpt-oss-120b",
+    "provider": "gemini",
+    "family": "gemini",
+    "model": "gemini-3.8-flash",
     "tier": "S",
-    "priority": 1
+    "priority": 1,
+    "multimodal": true
   },
   "primary_b": {
     "provider": "groq",
-    "family": "qwen",
-    "model": "qwen/qwen3.8-27b",
+    "family": "gpt-oss",
+    "model": "openai/gpt-oss-120b",
     "tier": "S",
     "priority": 2
   },
@@ -90,11 +98,12 @@
     }
   ],
   "arbiter": {
-    "provider": "groq",
-    "model": "openai/gpt-oss-20b",
-    "family": "gpt-oss",
-    "tier": "A",
-    "priority": 3
+    "provider": "gemini",
+    "model": "gemini-3.8-flash",
+    "family": "gemini",
+    "tier": "S",
+    "priority": 1,
+    "multimodal": true
   },
   "fallback": {
     "provider": "openrouter",
@@ -149,26 +158,48 @@
     }
   ],
   "vision": {
+    "tier_1_gemini": [
+      {
+        "provider": "gemini",
+        "model": "gemini-3.8-flash",
+        "tier": "S",
+        "priority": 1,
+        "multimodal": true
+      }
+    ],
     "tier_1_groq": [
+      {
+        "provider": "groq",
+        "model": "qwen/qwen3.8-27b",
+        "tier": "S",
+        "priority": 1
+      },
       {
         "provider": "groq",
         "model": "meta-llama/llama-4-scout-17b-16e-instruct",
         "tier": "S",
-        "priority": 1
+        "priority": 2
       }
     ],
     "tier_2_gemini": [
       {
         "provider": "gemini",
+        "model": "gemini-3.8-flash",
+        "tier": "S",
+        "priority": 1,
+        "multimodal": true
+      },
+      {
+        "provider": "gemini",
         "model": "gemini-2.0-flash",
         "tier": "S",
-        "priority": 1
+        "priority": 2
       },
       {
         "provider": "gemini",
         "model": "gemini-1.5-flash",
         "tier": "A",
-        "priority": 2
+        "priority": 3
       }
     ],
     "tier_3_openrouter": [
@@ -198,11 +229,12 @@
   },
   "timeouts_ms": {
     "groq_parallel_timeout_ms": 4500,
+    "gemini_timeout_ms": 6500,
     "openrouter_fallback_timeout_ms": 3200,
     "searxng_timeout_ms": 650,
     "searxng_grounded_llm_timeout_ms": 900,
     "s_tier_soft_escalation_ms": 1300,
-    "hard_total_budget_ms": 6500,
+    "hard_total_budget_ms": 8500,
     "max_tokens": 1024
   },
   "code_timeouts_ms": {
