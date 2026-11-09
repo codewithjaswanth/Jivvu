@@ -34,6 +34,7 @@ from backend.core.prompts import (
 from backend.core.providers import (
     ModelResponse,
     call_gemini_primary,
+    call_gemini_provider,
     call_gemini_with_staggered_hedge,
     call_single_completion,
     compute_gemini_thinking_budget,
@@ -316,4 +317,168 @@ def test_7_multi_answer_per_option_majority_voting():
     majority_indices, method = compute_multi_majority_indices(set_a, set_b, set_c, num_options=4)
     assert majority_indices == [0, 1], f"Expected [0, 1], got {majority_indices}"
     assert method == "majority_2_of_3"
+
+
+# ==============================================================================
+# 8. EXPLICIT GEMINI MODEL SELECTION & ROBUST ERROR GATING
+# ==============================================================================
+def test_8_gemini_slug_normalization_and_display():
+    """Verify that all Gemini model aliases normalize deterministically to canonical slugs."""
+    from backend.model_manager import get_model_display_label, normalize_model_identifier
+
+    # Canonical Gemini slugs
+    assert normalize_gemini_model("gemini-3.8-flash") == "gemini-3.8-flash"
+    assert normalize_gemini_model("models/gemini-3.8-flash") == "gemini-3.8-flash"
+    assert normalize_gemini_model("gemini-flash") == "gemini-3.8-flash"
+    assert normalize_gemini_model("gemini:gemini-3.8-flash") == "gemini-3.8-flash"
+    assert normalize_gemini_model("primary_a") == "gemini-3.8-flash"
+    assert normalize_gemini_model("gemini") == "gemini-3.8-flash"
+
+    # Model Manager normalization
+    assert normalize_model_identifier("gemini-3.8-flash") == "gemini-3.8-flash"
+    assert normalize_model_identifier("models/gemini-3.8-flash") == "gemini-3.8-flash"
+    assert normalize_model_identifier("gemini-flash") == "gemini-3.8-flash"
+    assert normalize_model_identifier("gemini:gemini-3.8-flash") == "gemini:gemini-3.8-flash"
+    assert normalize_model_identifier("primary_a") == "primary_a"
+    assert normalize_model_identifier("gemini_only") == "gemini_only"
+
+    # Display labels
+    assert "Gemini" in get_model_display_label("gemini-3.8-flash")
+    assert "Gemini" in get_model_display_label("gemini:gemini-3.8-flash")
+
+
+@pytest.mark.anyio
+async def test_8_explicit_gemini_selection_routes_directly_without_groq():
+    """Verify that explicit selection of gemini-3.8-flash directly invokes Gemini with zero Groq fallback."""
+    from backend.core.llm_client import solve_with_gemini_direct
+
+    mock_norm = MagicMock(
+        canonical_key="B",
+        selected_index=1,
+        selected_text="Option B",
+        selected_indices=None,
+        selected_texts=None,
+        canonical_keys=None,
+        permutation_indices=None,
+        ordered_texts=None,
+    )
+    mock_resp = ModelResponse(
+        answer="B",
+        reason="Direct Gemini derivation",
+        raw_text='{"answer":"B"}',
+        norm=mock_norm,
+    )
+
+    with patch("backend.core.llm_client.call_gemini_provider", new_callable=AsyncMock) as mock_provider:
+        mock_provider.return_value = (mock_resp, 110.0, None)
+
+        # 1. Via solve_with_gemini_direct directly
+        mock_client = AsyncMock()
+        res_direct = await solve_with_gemini_direct(
+            client=mock_client,
+            model="gemini-3.8-flash",
+            subject="Aptitude",
+            q_type="mcq",
+            question="What is 2 + 2?",
+            options=["3", "4", "5"],
+        )
+        assert res_direct.status == "OK"
+        assert res_direct.confidence_tier == "SINGLE_PRIMARY_PASSED"
+        assert res_direct.canonical_key == "B"
+        assert res_direct.models_called == ["gemini-3.8-flash"]
+
+        # 2. Via solve_question with selected_model="gemini-3.8-flash"
+        res_solve = await solve_question(
+            subject="Aptitude",
+            q_type="mcq",
+            question="What is 2 + 2?",
+            options=["3", "4", "5"],
+            selected_model="gemini-3.8-flash",
+        )
+        assert res_solve.status == "OK"
+        assert res_solve.canonical_key == "B"
+        assert res_solve.models_called == ["gemini-3.8-flash"]
+        assert "primary_b" not in res_solve.models_called
+
+        # 3. Via solve_question with alias "models/gemini-3.8-flash"
+        res_solve_alias = await solve_question(
+            subject="Aptitude",
+            q_type="mcq",
+            question="What is 2 + 2?",
+            options=["3", "4", "5"],
+            selected_model="models/gemini-3.8-flash",
+        )
+        assert res_solve_alias.status == "OK"
+        assert res_solve_alias.models_called == ["gemini-3.8-flash"]
+
+        # 4. Via solve_question with alias "gemini-flash"
+        res_solve_flash = await solve_question(
+            subject="Aptitude",
+            q_type="mcq",
+            question="What is 2 + 2?",
+            options=["3", "4", "5"],
+            selected_model="gemini-flash",
+        )
+        assert res_solve_flash.status == "OK"
+        assert res_solve_flash.models_called == ["gemini-3.8-flash"]
+
+
+@pytest.mark.anyio
+async def test_8_gemini_429_exhaustion_clean_error():
+    """Verify that when all Gemini keys return 429, a clean RATE_LIMIT_EXHAUSTED error is returned without Groq fallback."""
+    with patch("backend.core.llm_client.call_gemini_provider", new_callable=AsyncMock) as mock_provider:
+        mock_provider.return_value = (None, 85.0, "RATE_LIMIT_429: Resource has been exhausted")
+
+        res = await solve_question(
+            subject="Aptitude",
+            q_type="mcq",
+            question="What is 10 / 2?",
+            options=["2", "5", "10"],
+            selected_model="gemini-3.8-flash",
+        )
+
+        assert res.status == "UNCERTAIN"
+        assert res.confidence_tier == "RATE_LIMIT_EXHAUSTED"
+        assert "quota exhausted" in res.error.lower() or "rate_limit_429" in res.error.lower()
+        assert res.models_called == ["gemini-3.8-flash"]
+        assert "primary_b" not in res.models_called
+
+
+@pytest.mark.anyio
+async def test_8_invalid_model_slug_error_handling():
+    """Verify that passing an invalid model slug returns a descriptive error rather than an unhandled HTTP 500."""
+    from fastapi.testclient import TestClient
+    from backend.app import app
+
+    # Direct solve_question call
+    res = await solve_question(
+        subject="Aptitude",
+        q_type="mcq",
+        question="What is 3 * 3?",
+        options=["6", "9", "12"],
+        selected_model="definitely_unrecognized_slug_xyz",
+    )
+    assert res.status == "UNCERTAIN"
+    assert res.confidence_tier == "INVALID_MODEL"
+    assert "Invalid or unrecognized model slug" in res.error
+
+    # Via FastAPI POST /solve endpoint
+    client = TestClient(app)
+    resp = client.post(
+        "/solve",
+        json={
+            "subject": "Aptitude",
+            "q_type": "mcq",
+            "question": "What is 3 * 3?",
+            "options": ["6", "9", "12"],
+            "model": "definitely_unrecognized_slug_xyz",
+            "bypass_cache": True,
+        },
+    )
+    assert resp.status_code == 200, f"Must return HTTP 200 with error details, not {resp.status_code}"
+    data = resp.json()
+    assert data["status"] == "uncertain"
+    assert data["confidence_tier"] == "INVALID_MODEL"
+    assert "Invalid or unrecognized model slug" in data.get("error", "")
+
 

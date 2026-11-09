@@ -1,29 +1,24 @@
 # QuizZy / Jivvu Project State
 
-## Current Milestone: Per-API-Key Telemetry & Live Quota Observability Suite (:8765)
-- **Status**: Production-Ready / 315 Passing Tests (100% Pass Rate) / Live Daemons on `:8000` & `:8765`.
+## Current Milestone: Explicit Model Selection for Gemini 3.8 Flash & Quota Gating
+- **Status**: Production-Ready / 319 Passing Tests (100% Pass Rate) / Live Daemons on `:8000` & `:8765`.
 - **Primary Repository Remote**: `https://github.com/codewithjaswanth/Jivvu.git` (`main` branch).
 - **Core Production Upgrades Delivered**:
-  - **Per-API-Key Telemetry & Sliding-Window Quotas (`backend/core/key_pool.py`, `backend/telemetry_db.py`)**:
-    - Deterministic SHA256 `key_id` and zero-leak masking across all 16 configured keys (Gemini 4, Groq 7, OpenRouter 5).
-    - SQLite WAL persistent tables `api_key_status` and `api_key_events` tracking 60s sliding-window RPM & TPM and 24h requests.
-    - Robust rate-limit reset duration parsing across formats (`2m30s`, `450ms`, `15s`, timestamps).
-  - **Provider Invocation Instrumentation (`backend/core/providers.py`)**:
-    - Centralized instrumentation in `call_single_completion` capturing exact token counts (prompt, completion, thinking) and rate-limit headers.
-    - Non-blocking telemetry recording across HTTP 200, 429, 503, 401/403, and network timeouts.
-  - **Executive-Grade Dashboard Observability Suite (`backend/static/dashboard/*`, `backend/dashboard_server.py`)**:
-    - Provider Summary Bar tracking total, healthy, cooldown, quarantined keys, global RPM/TPM, and total tokens.
-    - Interactive Provider Tabs ("All Keys", "Gemini 3.8 Flash", "Groq", "OpenRouter") with debounced search.
-    - High-density Grid Cards with dual RPM & TPM progress bars, token breakdown, and live 1s ticking reset countdowns.
-    - Targeted per-key cooldown reset and global "Reset All Cooldowns" button synced to Port 8000.
-  - **Synchronized REST APIs (`backend/app.py`, `backend/dashboard_server.py`)**:
-    - `:8765/api/dashboard/api-keys` & `:8000/api/key-pool-status` returning live quota metrics.
-    - `:8765/api/dashboard/api-keys/reset-cooldown` & `:8000/api/reset-state` clearing in-memory and SQLite cooldowns.
+  - **Explicit Model Routing & Strict Provider Isolation (`backend/core/llm_client.py`)**:
+    - Direct delegation via `solve_with_gemini_direct()` when `gemini-3.8-flash` (or aliases `"models/gemini-3.8-flash"`, `"gemini-flash"`, `"gemini:gemini-3.8-flash"`, `"gemini_only"`, `"primary_a"`) is selected.
+    - Strict isolation: bypasses the parallel Groq race and eliminates silent Groq (`primary_b`) fallbacks when explicit Gemini solving is requested.
+  - **Slug Normalization & Provider Dispatch (`backend/core/providers.py`, `backend/model_manager.py`)**:
+    - `normalize_gemini_model()` cleanly strips `gemini:` and `models/` prefixes and normalizes all slug variations to canonical `"gemini-3.8-flash"`.
+    - Added `call_gemini_provider` alias with adaptive thinking budget (`1024` or `2048`) and multi-part thought filtering.
+  - **Defensive Error Handling & Non-500 HTTP Gating**:
+    - Key quota exhaustion across all 4 keys returns clean `status="UNCERTAIN"`, `confidence_tier="RATE_LIMIT_EXHAUSTED"`, and descriptive message with HTTP 200 (never unhandled HTTP 500).
+    - Unrecognized/invalid model slugs cleanly return `confidence_tier="INVALID_MODEL"` with HTTP 200.
+    - Full `auto` dual-engine race and cascade fallbacks remain 100% functional for automated workflows.
 - **Active Daemons & Interfaces**:
   - Local Inference Backend (`127.0.0.1:8000`): Healthy and active (`/health` HTTP 200).
-  - Observability Dashboard (`127.0.0.1:8765`): v1.3 active (`ON`), live telemetry stream running.
+  - Observability Dashboard (`127.0.0.1:8765`): Active (`ON`), live telemetry stream running.
 - **Test Integrity & Evidence**:
-  - Full Pytest Suite (`pytest tests -q`): 315 passed, 3 skipped, 1 warning (100% pass rate in 137s).
-  - API Key Telemetry Suite (`tests/test_api_key_dashboard_telemetry.py`): 5/5 passed (100%).
+  - Full Pytest Suite (`pytest tests -q`): 319 passed, 3 skipped, 1 warning (100% pass rate in 133s).
+  - Gemini 3.8 Flash Suite (`tests/test_gemini_38_flash_aptitude_and_vision.py`): 11/11 passed (100%).
   - Model Selection & Dashboard Suite (`tests/test_model_selection.py`): 9/9 passed (100%).
   - Offline Deterministic Self-Test (`eval/run_eval.py --self-test`): 8/8 passed (100%).

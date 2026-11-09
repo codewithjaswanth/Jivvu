@@ -88,6 +88,7 @@ from backend.core.key_pool import (
 from backend.core.providers import (
     ModelResponse,
     call_gemini_primary,
+    call_gemini_provider,
     call_gemini_with_staggered_hedge,
     call_groq_primary,
     call_model_with_budget_retry,
@@ -143,6 +144,174 @@ class LLMClient:
 def get_llm_client(config: Optional[dict] = None) -> LLMClient:
     """Factory helper to obtain an LLMClient instance."""
     return LLMClient(config=config)
+
+
+def is_gemini_direct_target(eff_model: str, config: Optional[dict] = None) -> bool:
+    """Return True if the effective model selection explicitly targets Google Gemini."""
+    if not eff_model or eff_model == "auto":
+        return False
+    clean = str(eff_model).strip()
+    norm_m = normalize_gemini_model(clean)
+    if "gemini" in norm_m.lower():
+        return True
+    if clean.lower() in ("gemini_only", "gemini"):
+        return True
+    if clean.lower() == "primary_a":
+        pri_a = config.get("primary_a", {}) if config else {}
+        return pri_a.get("provider", "gemini") == "gemini"
+    return False
+
+
+def is_valid_model_slug(model: str, config: Optional[dict] = None) -> bool:
+    """Check if the model string corresponds to a known valid model, alias, or provider mode."""
+    if not model or model == "auto":
+        return True
+    if is_gemini_direct_target(model, config):
+        return True
+    clean = str(model).strip()
+    if clean in ("primary_b", "groq_only", "groq", "openrouter_only", "openrouter"):
+        return True
+    if clean.startswith("groq:") or clean.startswith("openrouter:"):
+        return True
+    if any(k in clean.lower() for k in ("gpt-oss", "qwen", "llama", "nemotron", "gemma", "lfm")):
+        return True
+    if config and isinstance(config, dict):
+        for it in config.get("text_cascade", []):
+            m = it.get("model", "")
+            p = it.get("provider", "")
+            if m == clean or f"{p}:{m}" == clean:
+                return True
+        for it in config.get("fallback_pool", []):
+            if isinstance(it, dict):
+                m = it.get("model", "")
+                p = it.get("provider", "")
+                if m == clean or f"{p}:{m}" == clean:
+                    return True
+        for it in config.get("groq_buckets", []):
+            if isinstance(it, dict):
+                m = it.get("model", "")
+                p = it.get("provider", "")
+                if m == clean or f"{p}:{m}" == clean:
+                    return True
+    return False
+
+
+async def solve_with_gemini_direct(
+    client: httpx.AsyncClient,
+    model: str,
+    subject: str,
+    q_type: str,
+    question: str,
+    options: List[str],
+    messages: Optional[List[Dict[str, Any]]] = None,
+    language: Optional[str] = None,
+    starter_code: Optional[str] = None,
+    error_context: Optional[str] = None,
+    image_data: Optional[str] = None,
+    timeout_ms: float = 6500.0,
+    max_tokens: int = 2048,
+) -> SolverResponse:
+    """
+    Direct solver delegation to Gemini provider adapter (gemini-3.8-flash)
+    using the 4-key round-robin pool with automatic key failover.
+    Bypasses Groq completely with zero silent fallbacks.
+    """
+    canonical_model = normalize_gemini_model(model)
+    if canonical_model in ("gemini_only", "primary_a", "gemini"):
+        canonical_model = "gemini-3.8-flash"
+
+    gemini_keys = load_gemini_api_keys()
+    if not gemini_keys:
+        return SolverResponse(
+            status="UNCERTAIN",
+            confidence_tier="UNCERTAIN_NO_KEYS",
+            error="No GEMINI_API_KEYS configured.",
+            models_called=[canonical_model],
+            agreement_details={},
+        )
+
+    if messages is None:
+        messages = build_prompt_messages(
+            subject=subject,
+            q_type=q_type,
+            question=question,
+            options=options,
+            language=language,
+            starter_code=starter_code,
+            error_context=error_context,
+            image_data=image_data,
+        )
+
+    thinking_budget = compute_gemini_thinking_budget(
+        q_type=q_type,
+        question=question,
+        has_image=bool(image_data and str(image_data).strip()),
+    )
+    effective_max_tokens = max(max_tokens, thinking_budget + 1024, 2048)
+
+    active_key = get_next_gemini_key() or gemini_keys[0]
+
+    resp, el, err = await call_gemini_provider(
+        client,
+        "gemini",
+        canonical_model,
+        messages,
+        active_key,
+        timeout_ms,
+        q_type,
+        options,
+        language=language,
+        starter_code=starter_code,
+        max_tokens=effective_max_tokens,
+    )
+
+    if err or not resp:
+        err_str = str(err or "")
+        if "429" in err_str or "RATE_LIMIT" in err_str:
+            tier = "RATE_LIMIT_EXHAUSTED"
+            msg = f"Gemini 3.8 Flash quota exhausted across all keys: {err_str}"
+        elif "503" in err_str:
+            tier = "PROVIDER_OVERLOADED"
+            msg = f"Gemini 3.8 Flash service unavailable (503): {err_str}"
+        elif "401" in err_str or "403" in err_str:
+            tier = "PROVIDER_AUTH_ERROR"
+            msg = f"Gemini 3.8 Flash authentication failed (401/403): {err_str}"
+        else:
+            tier = "PROVIDER_ERROR"
+            msg = f"Gemini 3.8 Flash provider error: {err_str or 'Empty response from model'}"
+
+        return SolverResponse(
+            status="UNCERTAIN",
+            confidence_tier=tier,
+            error=msg,
+            latency_ms=el,
+            models_called=[canonical_model],
+            agreement_details={"gemini_direct": {"model": canonical_model, "error": err_str, "latency_ms": el}},
+        )
+
+    norm = getattr(resp, "norm", None)
+    return SolverResponse(
+        status="OK",
+        confidence_tier="SINGLE_PRIMARY_PASSED",
+        canonical_key=getattr(norm, "canonical_key", None),
+        selected_index=getattr(norm, "selected_index", None),
+        selected_text=getattr(norm, "selected_text", None),
+        selected_indices=getattr(norm, "selected_indices", None),
+        selected_texts=getattr(norm, "selected_texts", None),
+        canonical_keys=getattr(norm, "canonical_keys", None),
+        permutation_indices=getattr(norm, "permutation_indices", None),
+        ordered_texts=getattr(norm, "ordered_texts", None),
+        reason=getattr(resp, "reason", "Gemini 3.8 Flash direct derivation."),
+        latency_ms=el,
+        models_called=[canonical_model],
+        agreement_details={
+            "gemini_direct": {
+                "model": canonical_model,
+                "canonical_key": getattr(norm, "canonical_key", None),
+                "latency_ms": el,
+            }
+        },
+    )
 
 
 async def solve_question(
@@ -639,6 +808,15 @@ async def solve_question(
             selected_model or config.get("selected_model") or get_active_model_selection()
         )
 
+        if eff_model != "auto" and not is_valid_model_slug(eff_model, config):
+            return SolverResponse(
+                status="UNCERTAIN",
+                confidence_tier="INVALID_MODEL",
+                error=f"Invalid or unrecognized model slug: '{eff_model}'",
+                models_called=[eff_model],
+                agreement_details={},
+            )
+
         single_primary_cascade = config.get("single_primary_cascade")
         if eff_model != "auto":
             single_primary_cascade = True
@@ -687,6 +865,28 @@ async def solve_question(
                         )
                 except Exception:
                     pass
+
+            if is_gemini_direct_target(eff_model, config):
+                direct_timeout = float(timeouts.get("gemini_timeout_ms", 6500))
+                direct_res = await solve_with_gemini_direct(
+                    client=client,
+                    model=eff_model,
+                    subject=subject,
+                    q_type=q_type,
+                    question=question,
+                    options=options,
+                    messages=messages,
+                    language=language,
+                    starter_code=starter_code,
+                    error_context=error_context,
+                    image_data=image_data,
+                    timeout_ms=direct_timeout,
+                    max_tokens=max_tokens,
+                )
+                if searxng_used:
+                    direct_res.searxng_used = True
+                    direct_res.search_sources = search_sources
+                return direct_res
 
             text_cascade_cfg = config.get("text_cascade")
             if not text_cascade_cfg:

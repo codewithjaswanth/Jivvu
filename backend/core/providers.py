@@ -114,9 +114,12 @@ APTITUDE_REGEX = re.compile(
 def normalize_gemini_model(model: str) -> str:
     """Normalize gemini-3.8-flash and models/gemini-3.8-flash to canonical model slug."""
     m = (model or "").strip()
+    if m.startswith("gemini:"):
+        m = m[len("gemini:"):]
     if m.startswith("models/"):
         m = m[len("models/"):]
-    if not m or m.lower() in ("gemini", "default"):
+    low = m.lower().replace("-", "_").replace(" ", "_")
+    if not m or low in ("gemini", "default", "gemini_flash", "gemini_3.8", "gemini_3_8", "gemini_3.8_flash", "gemini_3_8_flash", "primary_a"):
         return "gemini-3.8-flash"
     return m
 
@@ -1012,6 +1015,10 @@ async def call_gemini_primary(
         return None, el, err
 
     return ModelResponse(answer=parsed.answer, reason=parsed.reason, raw_text=raw or "", norm=norm), el, None
+
+
+# Direct provider callable alias for explicit manual selection dispatch
+call_gemini_provider = call_gemini_primary
 
 
 async def call_gemini_with_staggered_hedge(
