@@ -254,9 +254,26 @@ def record_key_invocation_telemetry(
                 if reset_duration > 0.0:
                     reset_at_epoch = time.time() + reset_duration
 
+        if status_code == 429:
+            remaining_requests = 0
+
+        if response_data and isinstance(response_data, dict):
+            err_obj = response_data.get("error", {}) if "error" in response_data else {}
+            if isinstance(err_obj, dict):
+                for d in err_obj.get("details", []):
+                    if isinstance(d, dict) and "violations" in d:
+                        for v in d.get("violations", []):
+                            if isinstance(v, dict) and "quotaValue" in v:
+                                try:
+                                    limit_requests = int(v["quotaValue"])
+                                except (ValueError, TypeError):
+                                    pass
+
         cooldown_until_epoch = None
         if cooldown_duration_s and cooldown_duration_s > 0.0:
             cooldown_until_epoch = time.time() + cooldown_duration_s
+            if reset_at_epoch is None:
+                reset_at_epoch = cooldown_until_epoch
 
         record_api_key_call_telemetry(
             key_id=ident["key_id"],
@@ -614,11 +631,39 @@ async def call_single_completion(
             )
             return None, elapsed_ms, f"HTTP_503: {response.text[:150]}"
         elif response.status_code == 429:
-            retry_after_hdr = response.headers.get("retry-after")
+            err_data = None
             try:
-                retry_after_sec = float(retry_after_hdr) if retry_after_hdr else 12.0
-            except ValueError:
-                retry_after_sec = 12.0
+                err_data = response.json()
+            except Exception:
+                pass
+
+            retry_after_hdr = response.headers.get("retry-after")
+            retry_after_sec = 12.0
+            if retry_after_hdr:
+                try:
+                    retry_after_sec = float(retry_after_hdr)
+                except ValueError:
+                    p_hdr = parse_reset_duration_seconds(retry_after_hdr)
+                    if p_hdr > 0:
+                        retry_after_sec = p_hdr
+
+            # Parse structured delay & quota from error response body (e.g. Gemini RetryInfo / error message)
+            if isinstance(err_data, dict):
+                err_obj = err_data.get("error", {})
+                if isinstance(err_obj, dict):
+                    for d in err_obj.get("details", []):
+                        if isinstance(d, dict) and "retryDelay" in d:
+                            p_delay = parse_reset_duration_seconds(d["retryDelay"])
+                            if p_delay > 0:
+                                retry_after_sec = p_delay
+                                break
+                    if retry_after_sec <= 12.0 and "message" in err_obj:
+                        msg_str = str(err_obj["message"])
+                        m_retry = re.search(r"retry\s+(?:in|after)\s+([0-9a-z\.]+)", msg_str, re.IGNORECASE)
+                        if m_retry:
+                            p_msg = parse_reset_duration_seconds(m_retry.group(1))
+                            if p_msg > 0:
+                                retry_after_sec = p_msg
 
             if provider == "groq":
                 is_daily_limit = retry_after_sec > 30.0 or any(
@@ -680,9 +725,10 @@ async def call_single_completion(
                 model=effective_model,
                 status_code=429,
                 latency_ms=elapsed_ms,
+                response_data=err_data,
                 headers=getattr(response, "headers", {}),
                 raw_prompt_text=prompt_str,
-                cooldown_duration_s=min(retry_after_sec, 8.0) if provider == "gemini" else (
+                cooldown_duration_s=retry_after_sec if provider == "gemini" else (
                     min(retry_after_sec, 600.0) if provider == "groq" else max(12.0, retry_after_sec)
                 ),
             )

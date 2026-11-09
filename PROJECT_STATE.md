@@ -1,24 +1,31 @@
 # QuizZy / Jivvu Project State
 
-## Current Milestone: Explicit Model Selection for Gemini 3.8 Flash & Quota Gating
+## Current Milestone: API Key Quota & Telemetry Observability Suite (Complete & Verified)
 - **Status**: Production-Ready / 319 Passing Tests (100% Pass Rate) / Live Daemons on `:8000` & `:8765`.
 - **Primary Repository Remote**: `https://github.com/codewithjaswanth/Jivvu.git` (`main` branch).
 - **Core Production Upgrades Delivered**:
-  - **Explicit Model Routing & Strict Provider Isolation (`backend/core/llm_client.py`)**:
-    - Direct delegation via `solve_with_gemini_direct()` when `gemini-3.8-flash` (or aliases `"models/gemini-3.8-flash"`, `"gemini-flash"`, `"gemini:gemini-3.8-flash"`, `"gemini_only"`, `"primary_a"`) is selected.
-    - Strict isolation: bypasses the parallel Groq race and eliminates silent Groq (`primary_b`) fallbacks when explicit Gemini solving is requested.
-  - **Slug Normalization & Provider Dispatch (`backend/core/providers.py`, `backend/model_manager.py`)**:
-    - `normalize_gemini_model()` cleanly strips `gemini:` and `models/` prefixes and normalizes all slug variations to canonical `"gemini-3.8-flash"`.
-    - Added `call_gemini_provider` alias with adaptive thinking budget (`1024` or `2048`) and multi-part thought filtering.
-  - **Defensive Error Handling & Non-500 HTTP Gating**:
-    - Key quota exhaustion across all 4 keys returns clean `status="UNCERTAIN"`, `confidence_tier="RATE_LIMIT_EXHAUSTED"`, and descriptive message with HTTP 200 (never unhandled HTTP 500).
-    - Unrecognized/invalid model slugs cleanly return `confidence_tier="INVALID_MODEL"` with HTTP 200.
-    - Full `auto` dual-engine race and cascade fallbacks remain 100% functional for automated workflows.
+  - **Deterministic Key Identity & Collision Elimination (`backend/core/key_pool.py`)**:
+    - Auto-detects 0-indexed position across loaded Gemini (4 keys), Groq (7 keys), and OpenRouter (5 keys) pools.
+    - Eliminates label collision (`GEMINI Key #1` on all cards) ensuring each key has a distinct label (`#1` through `#4`, etc.).
+  - **Multi-Hour & Day Duration Rate Limit Parsing (`backend/core/key_pool.py`)**:
+    - Full regex extraction for days (`d`) and hours (`h`) before minutes/seconds in `parse_reset_duration_seconds()`.
+    - Correctly parses durations like Google AI Studio's `16h24m10.048s` (~59,050s) and `1d2h`.
+  - **Gemini 429 Body Extraction & Unclamped Daily Cooldown (`backend/core/providers.py`)**:
+    - Parses structured error JSON for `@type: "...RetryInfo"` -> `retryDelay` and regex matches `Please retry in ...`.
+    - Eliminates 8.0s clamp on daily quota exhaustion; keys remain on cooldown for the true reset delay.
+    - Immediately records `remaining_requests = 0` on HTTP 429.
+  - **Accurate Quota State & 100% Utilization Accounting (`backend/telemetry_db.py`)**:
+    - Differentiates `COOLDOWN` (transient RPM spikes) vs `QUOTA_EXHAUSTED` (daily limits / > 300s).
+    - Keys with 0 remaining requests now show 100% utilization (red bar) instead of false 0.0% green.
+    - Healthy key summary correctly counts only truly healthy and idle keys.
+    - `reset_key_cooldown_in_db` clears both cooldown and reset epochs.
+  - **Frontend Countdown & UI Polish (`dashboard.js`, `styles.css`)**:
+    - Added `formatDuration()` to format multi-hour countdowns (e.g., `Reset in 15h 54m 01s`).
+    - Added `.status-pill-exhausted` and `.key-card.status-quota_exhausted` with rose styling.
 - **Active Daemons & Interfaces**:
   - Local Inference Backend (`127.0.0.1:8000`): Healthy and active (`/health` HTTP 200).
   - Observability Dashboard (`127.0.0.1:8765`): Active (`ON`), live telemetry stream running.
 - **Test Integrity & Evidence**:
-  - Full Pytest Suite (`pytest tests -q`): 319 passed, 3 skipped, 1 warning (100% pass rate in 133s).
-  - Gemini 3.8 Flash Suite (`tests/test_gemini_38_flash_aptitude_and_vision.py`): 11/11 passed (100%).
-  - Model Selection & Dashboard Suite (`tests/test_model_selection.py`): 9/9 passed (100%).
-  - Offline Deterministic Self-Test (`eval/run_eval.py --self-test`): 8/8 passed (100%).
+  - Full Pytest Suite (`pytest tests -q`): 319 passed, 3 skipped, 1 warning (100% pass rate in 141s).
+  - Telemetry Suite (`tests/test_api_key_dashboard_telemetry.py`): 5/5 passed (100%).
+  - Live Playwright Browser Audit: Confirmed cards render accurate quota, countdown, and labels.

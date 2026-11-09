@@ -298,7 +298,7 @@ async def set_dashboard_model_selection(request: Request) -> Dict[str, Any]:
     backend_synced = False
 
     try:
-        fast_timeout = httpx.Timeout(0.5, connect=0.3)
+        fast_timeout = httpx.Timeout(2.5, connect=1.0)
         async with httpx.AsyncClient(timeout=fast_timeout) as client:
             resp = await client.post(
                 "http://127.0.0.1:8000/api/model-selection",
@@ -384,7 +384,7 @@ async def reset_dashboard_key_cooldown(request: Request) -> Dict[str, Any]:
 
     backend_synced = False
     try:
-        fast_timeout = httpx.Timeout(0.5, connect=0.3)
+        fast_timeout = httpx.Timeout(2.5, connect=1.0)
         async with httpx.AsyncClient(timeout=fast_timeout) as client:
             resp = await client.post("http://127.0.0.1:8000/api/reset-state")
             backend_synced = (resp.status_code == 200)

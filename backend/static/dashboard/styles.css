@@ -1735,6 +1735,8 @@ font-family: var(--font-mono);
 .key-card.status-idle::before { background: var(--text-dim); }
 .key-card.status-cooldown::before { background: var(--amber); }
 .key-card.status-quarantined::before { background: var(--rose); }
+.key-card.status-quota_exhausted::before,
+.key-card.status-exhausted::before { background: var(--rose); }
 
 .key-card-header {
   display: flex;
@@ -1775,6 +1777,8 @@ font-family: var(--font-mono);
 .status-pill-idle { background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); }
 .status-pill-cooldown { background: var(--amber-subtle); color: var(--amber-text); border: 1px solid var(--amber-border); }
 .status-pill-quarantined { background: var(--rose-subtle); color: var(--rose-text); border: 1px solid var(--rose-border); }
+.status-pill-exhausted { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.35); }
+.status-pill-exhausted .pulse-indicator { background: var(--rose); }
 
 .key-card-badge-row {
   display: flex;
