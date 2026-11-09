@@ -729,3 +729,128 @@ def load_models_config(config_path: Optional[str] = None) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
+# ==============================================================================
+# Deterministic Key Identity, Masking & Rate Limit Parsing
+# ==============================================================================
+def get_key_identity(provider: str, raw_key: str, index: int = 0) -> Dict[str, Any]:
+    """
+    Generate deterministic masked identity and SHA256 key_id for an API key.
+    Never exposes raw key strings in logs, SQLite, or dashboard payloads.
+    """
+    prov = str(provider or "").strip().lower()
+    k = str(raw_key or "").strip()
+    if not k:
+        return {
+            "key_id": "empty",
+            "provider": prov,
+            "key_label": f"{prov.upper()} Key #{index + 1}",
+            "masked_key": "EMPTY",
+        }
+    key_id = hashlib.sha256(f"{prov}:{k}".encode("utf-8")).hexdigest()[:10]
+    if len(k) <= 10:
+        masked = k[:3] + "..." + k[-2:]
+    else:
+        masked = k[:6] + "..." + k[-4:]
+    return {
+        "key_id": key_id,
+        "provider": prov,
+        "key_label": f"{prov.upper()} Key #{index + 1}",
+        "masked_key": masked,
+    }
+
+
+def get_all_configured_keys() -> List[Dict[str, Any]]:
+    """
+    Return ordered list of all configured API key identities across Gemini, Groq, and OpenRouter.
+    Ensures every key in .env is immediately discoverable even if total requests == 0.
+    """
+    all_entries: List[Dict[str, Any]] = []
+    seen_ids = set()
+
+    # 1. Gemini
+    for idx, k in enumerate(load_gemini_api_keys()):
+        ident = get_key_identity("gemini", k, idx)
+        if ident["key_id"] not in seen_ids:
+            seen_ids.add(ident["key_id"])
+            all_entries.append(ident)
+
+    # 2. Groq
+    for idx, k in enumerate(load_groq_api_keys()):
+        ident = get_key_identity("groq", k, idx)
+        if ident["key_id"] not in seen_ids:
+            seen_ids.add(ident["key_id"])
+            all_entries.append(ident)
+
+    # 3. OpenRouter
+    for idx, k in enumerate(load_openrouter_api_keys()):
+        ident = get_key_identity("openrouter", k, idx)
+        if ident["key_id"] not in seen_ids:
+            seen_ids.add(ident["key_id"])
+            all_entries.append(ident)
+
+    return all_entries
+
+
+def parse_reset_duration_seconds(raw_val: Any) -> float:
+    """
+    Parse rate-limit reset duration strings ('2m59.5s', '450ms', '12s', '15.2', or epoch timestamp)
+    into a normalized duration in seconds.
+    """
+    if raw_val is None:
+        return 0.0
+    if isinstance(raw_val, (int, float)):
+        val = float(raw_val)
+        if val > 1_000_000_000:
+            return max(0.0, val - time.time())
+        return max(0.0, val)
+
+    s = str(raw_val).strip()
+    if not s:
+        return 0.0
+
+    try:
+        val = float(s)
+        if val > 1_000_000_000:
+            return max(0.0, val - time.time())
+        return max(0.0, val)
+    except ValueError:
+        pass
+
+    total_sec = 0.0
+    s_work = s
+
+    # 1. Milliseconds (check first before 's')
+    ms_match = re.search(r"(\d+(?:\.\d+)?)\s*ms(?![a-zA-Z])", s_work, re.IGNORECASE)
+    if ms_match:
+        total_sec += float(ms_match.group(1)) / 1000.0
+        s_work = s_work[:ms_match.start()] + " " + s_work[ms_match.end():]
+
+    # 2. Minutes
+    m_match = re.search(r"(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?(?![a-zA-Z])", s_work, re.IGNORECASE)
+    if m_match:
+        total_sec += float(m_match.group(1)) * 60.0
+        s_work = s_work[:m_match.start()] + " " + s_work[m_match.end():]
+
+    # 3. Seconds
+    s_match = re.search(r"(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?(?![a-zA-Z])", s_work, re.IGNORECASE)
+    if s_match:
+        total_sec += float(s_match.group(1))
+
+    return max(0.0, total_sec)
+
+
+def get_key_cooldown_remaining(key: str, provider: Optional[str] = None) -> float:
+    """Return in-memory remaining cooldown seconds for an API key."""
+    if not key:
+        return 0.0
+    now = time.time()
+    until = 0.0
+    prov = (provider or "").lower()
+    if prov == "gemini" or key in _gemini_key_cooldown_until:
+        until = max(until, _gemini_key_cooldown_until.get(key, 0.0))
+    if key in _key_quarantine_until:
+        until = max(until, _key_quarantine_until.get(key, 0.0))
+    return max(0.0, until - now)
+
+

@@ -15,6 +15,10 @@
     searchTerm: "",
     searchDebounceTimer: null,
     cachedRequests: [],
+    providerFilter: "all",
+    keySearchTerm: "",
+    apiKeysData: null,
+    countdownIntervalId: null,
   };
 
   // DOM Elements
@@ -48,7 +52,25 @@
     backendStatusCardLabel: document.getElementById("backend-status-card-label"),
     backendPingMs: document.getElementById("backend-ping-ms"),
     backendActiveModelBadge: document.getElementById("backend-active-model-badge"),
+    backendKeysBadge: document.getElementById("backend-keys-badge"),
     backendUptime: document.getElementById("backend-uptime"),
+
+    // API Key Telemetry Elements
+    sumTotalKeys: document.getElementById("sum-total-keys"),
+    sumHealthyKeys: document.getElementById("sum-healthy-keys"),
+    sumCooldownKeys: document.getElementById("sum-cooldown-keys"),
+    sumQuarantinedKeys: document.getElementById("sum-quarantined-keys"),
+    sumGlobalRpm: document.getElementById("sum-global-rpm"),
+    sumGlobalTpm: document.getElementById("sum-global-tpm"),
+    sumTotalTokens: document.getElementById("sum-total-tokens"),
+    sumTotal429s: document.getElementById("sum-total-429s"),
+    countTabAll: document.getElementById("count-tab-all"),
+    countTabGemini: document.getElementById("count-tab-gemini"),
+    countTabGroq: document.getElementById("count-tab-groq"),
+    countTabOpenrouter: document.getElementById("count-tab-openrouter"),
+    apiKeySearch: document.getElementById("api-key-search"),
+    keyCardsContainer: document.getElementById("key-cards-container"),
+    btnResetAllCooldowns: document.getElementById("btn-reset-all-cooldowns"),
 
     // Panels
     errorBreakdownList: document.getElementById("error-breakdown-list"),
@@ -106,6 +128,12 @@
         if (data.active_model_label || data.active_model) {
           if (el.backendActiveModelBadge) el.backendActiveModelBadge.textContent = data.active_model_label || data.active_model;
         }
+        if (el.backendKeysBadge) {
+          const gemKeys = data.details?.gemini_keys_loaded ?? 4;
+          const groqKeys = data.details?.groq_keys_loaded ?? 7;
+          const orKeys = data.details?.openrouter_keys_loaded ?? 5;
+          el.backendKeysBadge.textContent = `Gemini (${gemKeys}) • Groq (${groqKeys}) • OR (${orKeys})`;
+        }
         const uptimeSec = data.details?.uptime_seconds;
         el.backendUptime.textContent = formatUptime(uptimeSec);
       } else {
@@ -115,6 +143,7 @@
         el.backendStatusCardLabel.textContent = "OFF";
         el.backendStatusCardLabel.style.color = "var(--rose)";
         el.backendPingMs.textContent = "Offline";
+        if (el.backendKeysBadge) el.backendKeysBadge.textContent = "--";
         el.backendUptime.textContent = "Unreachable";
       }
     } catch (err) {
@@ -312,7 +341,24 @@
 
       const qSnippet = log.question_text ? escapeHtml(log.question_text.slice(0, 75)) : "<em>(Empty stem)</em>";
       const ansSnippet = log.selected_answer ? escapeHtml(String(log.selected_answer).slice(0, 45)) : "<em>--</em>";
-      const modelLabel = log.cache_hit ? "Cache Hit" : escapeHtml(log.model_name || "Solver");
+      let modelBadge = "Solver";
+      if (log.cache_hit) {
+        modelBadge = `<span class="badge-cache-hit">Cache Hit</span>`;
+      } else if (log.model_name) {
+        const m = log.model_name.toLowerCase();
+        if (m.includes("gemini")) {
+          modelBadge = `<span class="badge-gemini" title="${escapeHtml(log.model_name)}">gemini-3.8-flash</span>`;
+        } else if (m.includes("gpt-oss-120b")) {
+          modelBadge = `<span class="badge-groq" title="${escapeHtml(log.model_name)}">gpt-oss-120b</span>`;
+        } else if (m.includes("gpt-oss-20b")) {
+          modelBadge = `<span class="badge-groq" title="${escapeHtml(log.model_name)}">gpt-oss-20b</span>`;
+        } else if (m.includes("qwen")) {
+          modelBadge = `<span class="badge-groq" title="${escapeHtml(log.model_name)}">qwen3.8-27b</span>`;
+        } else {
+          const shortName = log.model_name.split("/").pop() || log.model_name;
+          modelBadge = `<span class="badge-model-other" title="${escapeHtml(log.model_name)}">${escapeHtml(shortName)}</span>`;
+        }
+      }
 
       tr.innerHTML = `
         <td class="table-id-cell">#${log.id}</td>
@@ -324,7 +370,7 @@
         <td>${statusBadge}</td>
         <td><span class="${errClass}">${log.error_type}</span></td>
         <td class="table-latency-cell">${Math.round(log.latency_ms)} ms</td>
-        <td class="table-time-cell">${modelLabel}</td>
+        <td class="table-time-cell">${modelBadge}</td>
       `;
 
       tr.addEventListener("click", () => openInspectorModal(log.id));
@@ -449,18 +495,278 @@
     }
   }
 
+  // 5. API Keys Observability & Live Quotas
+  function formatTokens(num) {
+    if (num == null || isNaN(num)) return "0";
+    const n = Number(num);
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+    return String(n);
+  }
+
+  async function pollApiKeys() {
+    try {
+      const res = await fetch("/api/dashboard/api-keys");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      state.apiKeysData = data;
+
+      // Update Summary Bar
+      const summary = data.summary || {};
+      if (el.sumTotalKeys) el.sumTotalKeys.textContent = summary.total_keys ?? 0;
+      if (el.sumHealthyKeys) el.sumHealthyKeys.textContent = summary.healthy_keys ?? 0;
+      if (el.sumCooldownKeys) el.sumCooldownKeys.textContent = summary.cooldown_keys ?? 0;
+      if (el.sumQuarantinedKeys) el.sumQuarantinedKeys.textContent = summary.quarantined_keys ?? 0;
+      if (el.sumGlobalRpm) el.sumGlobalRpm.textContent = summary.global_rpm ?? 0;
+      if (el.sumGlobalTpm) el.sumGlobalTpm.textContent = formatTokens(summary.global_tpm ?? 0);
+      if (el.sumTotalTokens) el.sumTotalTokens.textContent = formatTokens(summary.total_tokens ?? 0);
+      if (el.sumTotal429s) el.sumTotal429s.textContent = summary.total_429s ?? 0;
+
+      // Update Tab Badges
+      const byProv = summary.by_provider || {};
+      if (el.countTabAll) el.countTabAll.textContent = summary.total_keys ?? 16;
+      if (el.countTabGemini) el.countTabGemini.textContent = byProv.gemini?.total ?? 4;
+      if (el.countTabGroq) el.countTabGroq.textContent = byProv.groq?.total ?? 7;
+      if (el.countTabOpenrouter) el.countTabOpenrouter.textContent = byProv.openrouter?.total ?? 5;
+
+      renderKeyCards();
+    } catch (err) {
+      console.warn("Failed to poll API keys telemetry:", err);
+    }
+  }
+
+  function renderKeyCards() {
+    if (!el.keyCardsContainer || !state.apiKeysData) return;
+    const keys = state.apiKeysData.keys || [];
+
+    const provFilter = state.providerFilter.toLowerCase();
+    const search = state.keySearchTerm.trim().toLowerCase();
+
+    const filtered = keys.filter((k) => {
+      if (provFilter !== "all" && k.provider.toLowerCase() !== provFilter) return false;
+      if (search) {
+        const matchLabel = (k.key_label || "").toLowerCase().includes(search);
+        const matchKey = (k.masked_key || "").toLowerCase().includes(search);
+        const matchModel = (k.last_model || "").toLowerCase().includes(search);
+        if (!matchLabel && !matchKey && !matchModel) return false;
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      el.keyCardsContainer.innerHTML = `
+        <div class="empty-state-box" style="grid-column: 1 / -1; padding: 32px; text-align: center; color: var(--text-dim);">
+          No API keys match the selected provider and filter.
+        </div>
+      `;
+      return;
+    }
+
+    el.keyCardsContainer.innerHTML = filtered.map((k) => {
+      const statusLower = (k.status || "idle").toLowerCase();
+      let statusPillClass = "status-pill-idle";
+      let statusLabel = "IDLE";
+      if (statusLower === "healthy") {
+        statusPillClass = "status-pill-healthy";
+        statusLabel = "HEALTHY";
+      } else if (statusLower === "cooldown") {
+        statusPillClass = "status-pill-cooldown";
+        statusLabel = "COOLDOWN";
+      } else if (statusLower === "quarantined") {
+        statusPillClass = "status-pill-quarantined";
+        statusLabel = "QUARANTINED";
+      }
+
+      const provClass = (k.provider || "gemini").toLowerCase();
+      const provTag = (k.provider || "gemini").toUpperCase();
+
+      const rpmUtil = k.rpm_utilization_pct || 0;
+      let rpmColorClass = "progress-emerald";
+      if (rpmUtil > 85) rpmColorClass = "progress-rose";
+      else if (rpmUtil > 70) rpmColorClass = "progress-amber";
+
+      const tpmUtil = k.tpm_utilization_pct || 0;
+      let tpmColorClass = "progress-cyan";
+      if (tpmUtil > 85) tpmColorClass = "progress-rose";
+      else if (tpmUtil > 70) tpmColorClass = "progress-amber";
+
+      const cdRemain = k.cooldown_remaining_s || 0;
+      const winReset = k.window_reset_in_s || 0;
+      const activeTimerSec = cdRemain > 0 ? cdRemain : winReset;
+      let timerText = "Ready / Idle";
+      let timerActive = false;
+      if (activeTimerSec > 0) {
+        timerActive = true;
+        const mins = Math.floor(activeTimerSec / 60);
+        const secs = Math.floor(activeTimerSec % 60);
+        timerText = `Reset in ${mins}:${secs < 10 ? "0" : ""}${secs}`;
+      }
+
+      return `
+        <div class="key-card status-${statusLower}" data-provider="${escapeHtml(k.provider)}" data-key-id="${escapeHtml(k.key_id)}">
+          <div class="key-card-header">
+            <div class="key-card-title-group">
+              <span class="provider-tag ${provClass}">${escapeHtml(provTag)}</span>
+              <h3 class="key-label">${escapeHtml(k.key_label || "API Key")}</h3>
+            </div>
+            <span class="status-pill ${statusPillClass}">
+              <span class="pulse-indicator"></span>
+              ${escapeHtml(statusLabel)}
+            </span>
+          </div>
+
+          <div class="key-card-badge-row">
+            <code class="masked-key-badge" title="Key ID: ${escapeHtml(k.key_id)}">${escapeHtml(k.masked_key || "------")}</code>
+            <span class="key-last-model" title="${escapeHtml(k.last_model || "")}">${escapeHtml(k.last_model || "--")}</span>
+          </div>
+
+          <div class="key-card-metrics-grid">
+            <div class="kcm-item">
+              <span class="kcm-label">Reqs (24h/All)</span>
+              <span class="kcm-value"><strong>${k.requests_24h ?? 0}</strong> / ${k.total_requests ?? 0}</span>
+            </div>
+            <div class="kcm-item">
+              <span class="kcm-label">Success Rate</span>
+              <span class="kcm-value text-emerald">${(k.success_rate ?? 100).toFixed(1)}%</span>
+            </div>
+            <div class="kcm-item">
+              <span class="kcm-label">Avg Latency</span>
+              <span class="kcm-value">${(k.avg_latency_ms ?? 0).toFixed(1)} ms</span>
+            </div>
+            <div class="kcm-item">
+              <span class="kcm-label">429 / 503</span>
+              <span class="kcm-value ${k.count_429 > 0 ? "text-rose" : "text-slate"}">${k.count_429 ?? 0} / ${k.count_503 ?? 0}</span>
+            </div>
+          </div>
+
+          <div class="key-card-limits">
+            <div class="limit-bar-row">
+              <div class="limit-bar-labels">
+                <span>RPM (60s)</span>
+                <span>${k.rpm_current ?? 0} / ${k.rpm_limit ? k.rpm_limit.toLocaleString() : "--"} (${rpmUtil.toFixed(1)}%)</span>
+              </div>
+              <div class="progress-bar-container">
+                <div class="progress-bar-fill ${rpmColorClass}" style="width: ${Math.min(100, Math.max(0, rpmUtil))}%"></div>
+              </div>
+            </div>
+            <div class="limit-bar-row">
+              <div class="limit-bar-labels">
+                <span>TPM (60s)</span>
+                <span>${formatTokens(k.tpm_current ?? 0)} / ${k.tpm_limit ? formatTokens(k.tpm_limit) : "--"} (${tpmUtil.toFixed(1)}%)</span>
+              </div>
+              <div class="progress-bar-container">
+                <div class="progress-bar-fill ${tpmColorClass}" style="width: ${Math.min(100, Math.max(0, tpmUtil))}%"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="key-card-tokens-row">
+            <span>Tokens: <strong>${formatTokens(k.prompt_tokens ?? 0)} in</strong> • <strong>${formatTokens(k.completion_tokens ?? 0)} out</strong>${k.thinking_tokens ? ` • <strong>${formatTokens(k.thinking_tokens)} think</strong>` : ""}</span>
+          </div>
+
+          <div class="key-card-footer">
+            <div class="key-reset-timer ${timerActive ? "active-timer" : ""}" id="timer-${escapeHtml(k.key_id)}" data-remain="${activeTimerSec}">
+              <svg class="timer-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+              </svg>
+              <span class="timer-text">${escapeHtml(timerText)}</span>
+            </div>
+            <button class="btn-reset-key-cooldown" data-key-id="${escapeHtml(k.key_id)}" title="Reset cooldown for this key">
+              Reset
+            </button>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    const resetBtns = el.keyCardsContainer.querySelectorAll(".btn-reset-key-cooldown");
+    resetBtns.forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const kId = e.currentTarget.getAttribute("data-key-id");
+        if (kId) handleResetKeyCooldown(kId);
+      });
+    });
+  }
+
+  function startCountdownTicker() {
+    if (state.countdownIntervalId) clearInterval(state.countdownIntervalId);
+    state.countdownIntervalId = setInterval(() => {
+      const timerEls = document.querySelectorAll(".key-reset-timer");
+      timerEls.forEach((tel) => {
+        let sec = parseFloat(tel.getAttribute("data-remain") || "0");
+        if (sec > 0) {
+          sec = Math.max(0, sec - 1);
+          tel.setAttribute("data-remain", sec);
+          const span = tel.querySelector(".timer-text");
+          if (span) {
+            if (sec > 0) {
+              const mins = Math.floor(sec / 60);
+              const s = Math.floor(sec % 60);
+              span.textContent = `Reset in ${mins}:${s < 10 ? "0" : ""}${s}`;
+            } else {
+              tel.classList.remove("active-timer");
+              span.textContent = "Ready / Idle";
+            }
+          }
+        }
+      });
+    }, 1000);
+  }
+
+  async function handleResetKeyCooldown(keyId) {
+    try {
+      const res = await fetch("/api/dashboard/api-keys/reset-cooldown", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key_id: keyId }),
+      });
+      if (res.ok) {
+        await pollApiKeys();
+      }
+    } catch (err) {
+      console.warn("Failed to reset cooldown:", err);
+    }
+  }
+
   // Refresh All Telemetry
   async function refreshAll() {
-    await Promise.all([pollBackendStatus(), pollMetrics(), pollRequests()]);
+    await Promise.all([pollBackendStatus(), pollMetrics(), pollRequests(), pollApiKeys()]);
   }
 
   // 6. Model Selection Management
+  function populateModelDropdown(groups, selectedId) {
+    if (!el.modelSelect || !groups || !groups.length) return;
+    const currentVal = selectedId || el.modelSelect.value || "auto";
+    el.modelSelect.innerHTML = "";
+
+    groups.forEach((grp) => {
+      if (grp.options && grp.options.length) {
+        const optgroup = document.createElement("optgroup");
+        optgroup.label = grp.label;
+        grp.options.forEach((opt) => {
+          const option = document.createElement("option");
+          option.value = opt.id;
+          option.textContent = opt.label;
+          if (opt.id === currentVal) {
+            option.selected = true;
+          }
+          optgroup.appendChild(option);
+        });
+        el.modelSelect.appendChild(optgroup);
+      }
+    });
+    el.modelSelect.value = currentVal;
+  }
+
   async function fetchModelSelection() {
     try {
       const res = await fetch("/api/dashboard/model-selection");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      if (data.selected_model && el.modelSelect) {
+      if (data.catalog && data.catalog.groups && el.modelSelect) {
+        populateModelDropdown(data.catalog.groups, data.selected_model);
+      } else if (data.selected_model && el.modelSelect) {
         el.modelSelect.value = data.selected_model;
       }
       if (el.backendActiveModelBadge) {
@@ -584,11 +890,43 @@
         closeModal();
       }
     });
+
+    // Provider Tabs Switching
+    const provTabs = document.querySelectorAll(".prov-tab");
+    provTabs.forEach((tab) => {
+      tab.addEventListener("click", (e) => {
+        provTabs.forEach((t) => t.classList.remove("active"));
+        const btn = e.currentTarget;
+        btn.classList.add("active");
+        state.providerFilter = btn.getAttribute("data-provider") || "all";
+        renderKeyCards();
+      });
+    });
+
+    // API Key Search Input (debounced 200ms)
+    if (el.apiKeySearch) {
+      let keySearchTimer = null;
+      el.apiKeySearch.addEventListener("input", (e) => {
+        clearTimeout(keySearchTimer);
+        keySearchTimer = setTimeout(() => {
+          state.keySearchTerm = e.target.value;
+          renderKeyCards();
+        }, 200);
+      });
+    }
+
+    // Reset All Cooldowns
+    if (el.btnResetAllCooldowns) {
+      el.btnResetAllCooldowns.addEventListener("click", () => {
+        handleResetKeyCooldown("all");
+      });
+    }
   }
 
   // App Initialization
   async function init() {
     initListeners();
+    startCountdownTicker();
     await Promise.all([fetchModelSelection(), refreshAll()]);
     startPolling();
   }

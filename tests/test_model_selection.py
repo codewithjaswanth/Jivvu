@@ -88,6 +88,8 @@ def test_normalize_model_identifier_variants() -> None:
     assert normalize_model_identifier("pri_b") == "primary_b"
 
     # Provider Modes
+    assert normalize_model_identifier("gemini_only") == "gemini_only"
+    assert normalize_model_identifier("Gemini Only") == "gemini_only"
     assert normalize_model_identifier("groq_only") == "groq_only"
     assert normalize_model_identifier("Groq Only") == "groq_only"
     assert normalize_model_identifier("groq-only") == "groq_only"
@@ -97,6 +99,7 @@ def test_normalize_model_identifier_variants() -> None:
     assert normalize_model_identifier("openrouter") == "openrouter_only"
 
     # Specific Models
+    assert normalize_model_identifier("gemini:gemini-3.8-flash") == "gemini:gemini-3.8-flash"
     assert normalize_model_identifier("groq:openai/gpt-oss-120b") == "groq:openai/gpt-oss-120b"
     assert normalize_model_identifier("openai/gpt-oss-20b") == "groq:openai/gpt-oss-20b"
     assert normalize_model_identifier("openrouter:nvidia/nemotron-3.5-super-vl:free") == "openrouter:nvidia/nemotron-3.5-super-vl:free"
@@ -108,8 +111,10 @@ def test_get_model_display_labels() -> None:
     assert "Auto" in get_model_display_label("auto")
     assert "Primary A" in get_model_display_label("primary_a")
     assert "Primary B" in get_model_display_label("primary_b")
+    assert "Gemini Only" in get_model_display_label("gemini_only")
     assert "Groq Only" in get_model_display_label("groq_only")
     assert "OpenRouter Only" in get_model_display_label("openrouter_only")
+    assert "Gemini • gemini-3.8-flash" == get_model_display_label("gemini:gemini-3.8-flash")
     assert "Groq • openai/gpt-oss-20b" == get_model_display_label("groq:openai/gpt-oss-20b")
     assert "OpenRouter • gemma" in get_model_display_label("openrouter:gemma")
 
@@ -296,9 +301,11 @@ def test_dashboard_ui_html_and_js_elements(dashboard_client: TestClient) -> None
     assert 'value="auto"' in html_text
     assert 'value="primary_a"' in html_text
     assert 'value="primary_b"' in html_text
+    assert 'value="gemini_only"' in html_text
     assert 'value="groq_only"' in html_text
     assert 'value="openrouter_only"' in html_text
     assert 'id="backend-active-model-badge"' in html_text
+    assert 'id="backend-keys-badge"' in html_text
 
     # Verify dashboard.js contains model handling logic
     js_res = dashboard_client.get("/static/dashboard.js")

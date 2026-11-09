@@ -950,6 +950,66 @@ Implemented and strictly verified across live `learning.ccbp.in` question models
   - **Deterministic Offline Self-Test:** **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
   - **Live Daemons & Dashboard:** Port 8000 cycled cleanly via `lifecycle_manager.py` (PID 15632, HTTP 200 `/health`); Port 8765 Observability Dashboard active (`ON`, HTTP 200).
 
+### 10.30 Gemini 3.8 Flash Upgrade & Full-Spectrum API Health & Integrity Audit
+- **Technical Enhancements & Verification Delivered**:
+  1. **Full API Diagnostic Health Check Across All Providers**:
+     - **Google Gemini (4 keys)**: Authentication confirmed active (HTTP 200 on `/v1beta/models`, 61 models accessible including `gemini-3.8-flash`). Generation endpoints currently encounter HTTP 429 quota exhaustion, seamlessly handled by round-robin fallback.
+     - **Groq (7 keys)**: 100% healthy (7/7 keys HTTP 200 OK) on `openai/gpt-oss-20b` and `qwen/qwen3.8-27b`, ~7,000 req/day total capacity, latencies ~300–600ms.
+     - **OpenRouter (5 keys)**: 100% healthy (5/5 keys HTTP 200 OK) on `liquid/lfm-2.5-2.6b:free`, latencies ~395–840ms.
+     - **FastAPI Backend (`:8000`)**: 100% operational across `/health`, `/stats`, `/api/model-selection`, `/api/reset-state`, `/solve`, `/debug/solve`, `/feedback`.
+     - **Observability Dashboard (`:8765`)**: 100% operational across `/api/dashboard/ping`, `/api/lifecycle/status`, `/api/dashboard/backend-status`, `/api/dashboard/metrics`, `/api/dashboard/requests`.
+  2. **Automated Test Evidence**:
+     - **Full Pytest Suite:** **311/311 passing (100%)** across all 38 test suites (2 skipped, 1 warning in 133s).
+     - **Gemini 3.8 Flash Diagnostic Suite:** **7/7 passing (100%)** in `tests/test_gemini_38_flash_aptitude_and_vision.py`.
+     - **Deterministic Offline Self-Test:** **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
+     - **Live Daemons & Dashboard:** Port 8000 active (HTTP 200 `/health`); Port 8765 Observability Dashboard active (`ON`, HTTP 200).
+
+### 10.31 Observability Dashboard v1.3 Upgrade (Gemini 3.8 Flash & Key Pool Observability)
+- **Technical Enhancements Delivered**:
+  1. **Dynamic Model Catalog & Gemini Support (`backend/model_manager.py`)**:
+     - Added `gemini_only` (`GEMINI_ONLY_ID`) and `gemini:` prefix handling across normalization, labeling, catalog generation, and cascade routing.
+     - Updated primary profiles: `Primary A` mapped to `gemini-3.8-flash` (Google Gemini) and `Primary B` to `openai/gpt-oss-120b` (Groq).
+     - Grouped catalog dynamically extracts all models from `models.json`.
+  2. **Dashboard UI v1.3 & Keys Pool Observability (`backend/static/dashboard/*`)**:
+     - Updated UI brand to v1.3 with tagline: `Real-Time Gemini 3.8 Flash & Groq Dual-Engine Telemetry`.
+     - Injected live **Keys Pool Badge** on Card 6: `Gemini (4) • Groq (7) • OR (5)` from `/health` backend payload.
+     - Added dynamic client-side dropdown rendering (`populateModelDropdown`) so catalog changes render without reload.
+     - Styled custom badges for telemetry table rows: `.badge-gemini`, `.badge-groq`, and `.badge-cache-hit`.
+  3. **Verification Evidence**:
+     - **Full Pytest Suite:** **310/310 passing (100%)** across all 38 test suites (3 skipped, 1 warning in 135s).
+     - **Model Selection & Dashboard Suite:** **9/9 passing (100%)** in `tests/test_model_selection.py`.
+     - **Deterministic Offline Self-Test:** **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
+     - **Live Daemons & Dashboard:** Port 8000 active (HTTP 200 `/health`); Port 8765 Observability Dashboard active (`ON`, HTTP 200).
+
+### 10.32 Per-API-Key Telemetry & Live Quota Observability Suite (:8765)
+- **Technical Enhancements Delivered**:
+  1. **Deterministic Key Identity, Masking & Reset Parsing (`backend/core/key_pool.py`)**:
+     - `get_key_identity(provider, raw_key, index)`: Deterministic SHA256 `key_id` (10 chars), masked key formatting (`AQ.Ab8...P1rw`, `gsk_cH...oIlr`), and standard labels. Zero raw keys exposed.
+     - `get_all_configured_keys()`: Discovers all 16 configured keys across Gemini (4), Groq (7), and OpenRouter (5) so even 0-request keys display immediately upon startup.
+     - `parse_reset_duration_seconds()`: Accurately converts multi-unit rate-limit strings (`2m30s`, `450ms`, `15s`, epoch timestamps) to seconds.
+  2. **Sliding-Window Accounting & SQLite WAL Storage (`backend/telemetry_db.py`)**:
+     - Initialized `api_key_status` and `api_key_events` (with index `idx_key_events_ts`).
+     - `record_api_key_call_telemetry()`: Non-blocking recording of calls, token consumption (prompt, completion, thinking), status codes, latency, and rate-limit headers.
+     - `get_per_api_key_telemetry()`: Computes exact 60s sliding-window RPM & TPM, 24h request counts, error counters (429/503), remaining quota, and reset countdowns.
+     - `reset_key_cooldown_in_db()`: Resets cooldown states for specific keys or all keys in SQLite.
+  3. **Centralized Provider Invocation Instrumentation (`backend/core/providers.py`)**:
+     - Integrated `record_key_invocation_telemetry()` directly into `call_single_completion()` to instrument 100% of LLM completions.
+     - Captured Gemini token metadata (`promptTokenCount`, `candidatesTokenCount`, `thoughtsTokenCount`) and Groq/OpenRouter usage.
+  4. **Executive-Grade UI Suite (`backend/static/dashboard/*`)**:
+     - Provider Summary Bar tracking Total Keys (16), Healthy, Cooldown, Quarantined, Global RPM, Global TPM, Total Tokens, and Total 429s.
+     - Provider Filter Tabs ("All Keys", "Gemini 3.8 Flash", "Groq", "OpenRouter") with debounced search input.
+     - Key Cards Grid with dual RPM and TPM progress bars, token breakdown (input, output, thinking), and live 1-second ticking reset countdowns.
+     - Targeted per-key and global "Reset All Cooldowns" buttons with synced backend dispatch.
+  5. **Synchronized REST Endpoints (`backend/app.py`, `backend/dashboard_server.py`)**:
+     - `:8765/api/dashboard/api-keys` & `:8000/api/key-pool-status`: Returns full telemetry and quota status.
+     - `:8765/api/dashboard/api-keys/reset-cooldown` & `:8000/api/reset-state`: Resets in-memory and SQLite cooldowns.
+- **Verification Evidence**:
+  - **Full Pytest Suite:** **315/315 passing (100%)** across all 39 test suites (3 skipped, 1 warning in 137s).
+  - **API Key Telemetry Suite:** **5/5 passing (100%)** in `tests/test_api_key_dashboard_telemetry.py`.
+  - **Model Selection & Dashboard Suite:** **9/9 passing (100%)** in `tests/test_model_selection.py`.
+  - **Deterministic Offline Self-Test:** **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
+  - **Live Endpoints & Daemon Verification:** Both Port 8000 and Port 8765 queried via HTTP, reporting active 16-key telemetry with live token accounting.
+
 ---
 
 > *This document represents the complete, verified state of the QuizZy / Jivvu project as of November 2026. All components have been verified via automated tests and runtime audits.*

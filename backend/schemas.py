@@ -205,6 +205,8 @@ class HealthResponse(BaseModel):
     cache_entries: int
     searxng_enabled: bool = True
     searxng_circuit_open: bool = False
+    gemini_keys_loaded: int = 0
+    groq_keys_loaded: int = 0
     openrouter_keys_loaded: int = 1
     active_fallback_pool: List[str] = Field(default_factory=list)
     active_model_selection: str = "auto"

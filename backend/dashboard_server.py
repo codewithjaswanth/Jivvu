@@ -43,9 +43,12 @@ from backend.lifecycle_manager import (
 from backend.telemetry_db import (
     clear_logs,
     get_dashboard_summary,
+    get_per_api_key_telemetry,
     get_request_detail,
     get_request_logs,
+    reset_key_cooldown_in_db,
 )
+from backend.core.llm_client import load_models_config
 from backend.model_manager import (
     get_active_model_selection,
     get_available_models_catalog,
@@ -267,11 +270,15 @@ async def get_backend_status() -> Dict[str, Any]:
 async def get_dashboard_model_selection() -> Dict[str, Any]:
     """Retrieve active model selection, label, and full catalog for UI dropdown."""
     active = get_active_model_selection()
+    try:
+        config = load_models_config()
+    except Exception:
+        config = None
     return {
         "status": "ok",
         "selected_model": active,
         "selected_label": get_model_display_label(active),
-        "catalog": get_available_models_catalog(),
+        "catalog": get_available_models_catalog(config),
     }
 
 
@@ -348,4 +355,46 @@ async def clear_telemetry() -> Dict[str, Any]:
     """Clear all request telemetry logs from the database."""
     deleted_count = clear_logs()
     return {"status": "ok", "deleted": deleted_count}
+
+
+@app.get("/api/dashboard/api-keys")
+async def get_dashboard_api_keys() -> Dict[str, Any]:
+    """Retrieve comprehensive per-API-key metrics, token consumption, and live quotas."""
+    return get_per_api_key_telemetry()
+
+
+@app.post("/api/dashboard/api-keys/reset-cooldown")
+async def reset_dashboard_key_cooldown(request: Request) -> Dict[str, Any]:
+    """Reset cooldowns for a specific key_id or all keys."""
+    try:
+        body = await request.json()
+        key_id = body.get("key_id", "all") if isinstance(body, dict) else "all"
+    except Exception:
+        key_id = "all"
+
+    db_res = reset_key_cooldown_in_db(key_id=key_id)
+
+    try:
+        from backend.core.key_pool import reset_gemini_key_cooldown, reset_key_quarantine, reset_model_quarantine
+        reset_gemini_key_cooldown()
+        reset_key_quarantine()
+        reset_model_quarantine()
+    except Exception:
+        pass
+
+    backend_synced = False
+    try:
+        fast_timeout = httpx.Timeout(0.5, connect=0.3)
+        async with httpx.AsyncClient(timeout=fast_timeout) as client:
+            resp = await client.post("http://127.0.0.1:8000/api/reset-state")
+            backend_synced = (resp.status_code == 200)
+    except Exception:
+        backend_synced = False
+
+    return {
+        "status": "ok",
+        "key_id": key_id,
+        "cleared_count": db_res.get("cleared_count", 0),
+        "backend_synced": backend_synced,
+    }
 
