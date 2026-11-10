@@ -78,7 +78,7 @@ class SolveRequest(BaseModel):
         if raw_options is None:
             raw_options = []
         clean_options: List[str] = []
-        if isinstance(raw_options, list):
+        if isinstance(raw_options, (list, tuple, set)):
             for opt in raw_options:
                 if isinstance(opt, dict):
                     t = opt.get("text") or opt.get("label") or opt.get("value") or opt.get("option_text") or ""
@@ -100,26 +100,38 @@ class SolveRequest(BaseModel):
         q_type_str = str(raw_q_type).strip().lower() if raw_q_type is not None else ""
         type_aliases = {
             "mcq": "mcq",
+            "single": "mcq",
+            "radio": "mcq",
             "multiple": "multi",
             "multi": "multi",
             "multi_choice": "multi",
             "multiselect": "multi",
+            "checkbox": "multi",
+            "checkboxes": "multi",
             "ordering": "order",
             "order": "order",
+            "sequence": "order",
+            "reorder": "order",
+            "sort": "order",
             "fill": "text",
             "text": "text",
+            "short_answer": "text",
             "coding": "code",
             "code": "code",
+            "programming": "code",
+            "dsa": "code",
         }
         q_type_str = type_aliases.get(q_type_str, q_type_str)
         if not q_type_str or q_type_str == "auto":
-            q_type_str = "mcq"
+            q_type_str = "mcq" if len(clean_options) >= 2 else "text"
+        elif q_type_str not in ("mcq", "multi", "order", "text", "code"):
+            q_type_str = "mcq" if len(clean_options) >= 2 else "text"
 
-        # 5. Handle empty stem and empty options
+        # 6. Handle empty stem and empty options
         if not stem and not clean_options:
             raise ValueError("No question text or options detected on page")
 
-        # 6. Auto-coerce mcq to text if options are empty but stem is non-empty
+        # 7. Auto-coerce mcq to text if options are empty but stem is non-empty
         if q_type_str == "mcq" and len(clean_options) == 0 and stem:
             q_type_str = "text"
 
@@ -293,7 +305,7 @@ class FeedbackRequest(BaseModel):
         if raw_options is None:
             raw_options = []
         clean_options: List[str] = []
-        if isinstance(raw_options, list):
+        if isinstance(raw_options, (list, tuple, set)):
             for opt in raw_options:
                 if isinstance(opt, dict):
                     t = opt.get("text") or opt.get("label") or opt.get("value") or opt.get("option_text") or ""
@@ -315,26 +327,38 @@ class FeedbackRequest(BaseModel):
         q_type_str = str(raw_q_type).strip().lower() if raw_q_type is not None else ""
         type_aliases = {
             "mcq": "mcq",
+            "single": "mcq",
+            "radio": "mcq",
             "multiple": "multi",
             "multi": "multi",
             "multi_choice": "multi",
             "multiselect": "multi",
+            "checkbox": "multi",
+            "checkboxes": "multi",
             "ordering": "order",
             "order": "order",
+            "sequence": "order",
+            "reorder": "order",
+            "sort": "order",
             "fill": "text",
             "text": "text",
+            "short_answer": "text",
             "coding": "code",
             "code": "code",
+            "programming": "code",
+            "dsa": "code",
         }
         q_type_str = type_aliases.get(q_type_str, q_type_str)
         if not q_type_str or q_type_str == "auto":
-            q_type_str = "mcq"
+            q_type_str = "mcq" if len(clean_options) >= 2 else "text"
+        elif q_type_str not in ("mcq", "multi", "order", "text", "code"):
+            q_type_str = "mcq" if len(clean_options) >= 2 else "text"
 
-        # 5. Handle empty stem and empty options
+        # 6. Handle empty stem and empty options
         if not stem and not clean_options:
             raise ValueError("No question text or options detected on page")
 
-        # 6. Auto-coerce mcq to text if options are empty but stem is non-empty
+        # 7. Auto-coerce mcq to text if options are empty but stem is non-empty
         if q_type_str == "mcq" and len(clean_options) == 0 and stem:
             q_type_str = "text"
 

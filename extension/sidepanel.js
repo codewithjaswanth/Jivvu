@@ -1885,7 +1885,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Global Keyboard Shortcuts in Sidepanel (Alt+S, Alt+A, Alt+N, Alt+K, Alt+O, Alt+M, Ctrl+Shift+Z)
+  // Exclusive Keyboard Shortcuts in Sidepanel (Ctrl+Shift+Z, Alt+R, Shift)
   document.addEventListener("keydown", (e) => {
     if (!e) return;
     const key = (e.key || "").toLowerCase();

@@ -18,7 +18,7 @@
 2. **Order-Invariant SHA-256 SQLite Cache & Dynamic Remapping:**  
    Quiz questions are hashed by normalizing the canonical question stem and canonicalized option set. When shuffled options are encountered on different sessions or users, the backend dynamically remaps solution indices and keys to match the follower's visual permutation in `< 2ms`.
 3. **Multi-Model Consensus & Proactive Zero-429 Balancer:**  
-   Races independent Groq model buckets (`openai/gpt-oss-120b`, `llama-3.3-70b-versatile`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) with automatic failover to Gemini (`gemini-2.5-flash`) and OpenRouter (`nemotron-3.5-super-vl`, `gemma-4-31b-it`). Tracks per-key sliding window token headers (`x-ratelimit-remaining-tokens`) to proactively rotate keys *before* hitting rate limits.
+   Races independent Groq model buckets (`openai/gpt-oss-120b`, `llama-3.3-70b-versatile`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) with hedged Two-Wave Tier Cascade to OpenRouter (`nemotron-3-ultra-550b`, `gemma-4-31b-it`). Tracks per-key sliding window token headers (`x-ratelimit-remaining-tokens`) to proactively rotate keys and model buckets *before* hitting rate limits. Features Single-Primary Survival Fast-Path on 429.
 4. **Windowless Native Messaging Lifecycle:**  
    Spawns and manages the FastAPI backend using Windows `pythonw.exe` and a compiled C# binary (`native_host_win.exe`) with `CREATE_NO_WINDOW`. Zero terminal flicker, zero taskbar bloat, and automatic termination when test tabs close.
 5. **Decoupled Telemetry & Observability Dashboard (`:8765`):**  

@@ -50,6 +50,7 @@ native_host/*.json
 *.lnk
 
 # Scratch & Debug artifacts
+scratch/
 debug_*.js
 clean_*.py
 rebuild_*.py

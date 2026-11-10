@@ -820,8 +820,8 @@ async def solve_question(
                 agreement_details=agreement_details,
             )
 
-        is_429_b = bool(err_b and ("429" in str(err_b) or "rate" in str(err_b).lower() or "quota" in str(err_b).lower()))
-        is_429_a = bool(err_a and ("429" in str(err_a) or "rate" in str(err_a).lower() or "quota" in str(err_a).lower()))
+        is_429_b = bool(err_b and any(k in str(err_b).lower() for k in ("429", "rate", "quota", "tpm", "rpm", "limit", "exceeded", "cooldown", "too many requests", "resource_exhausted")))
+        is_429_a = bool(err_a and any(k in str(err_a).lower() for k in ("429", "rate", "quota", "tpm", "rpm", "limit", "exceeded", "cooldown", "too many requests", "resource_exhausted")))
 
         if succ_a and norm_a and not succ_b and is_429_b:
             reason_val = (parsed_a.reason if parsed_a else "") or "Primary A rescued via single-primary survival fast-path (Primary B hit 429)."

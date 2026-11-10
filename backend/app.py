@@ -824,6 +824,8 @@ async def _solve_core(
         final_sel_indices = getattr(solver_res, "selected_indices", None)
         final_sel_texts = getattr(solver_res, "selected_texts", None)
         final_canonical_keys = getattr(solver_res, "canonical_keys", None)
+        final_perm_indices = solver_res.permutation_indices
+        final_ordered_texts = solver_res.ordered_texts
 
         if req.q_type == "mcq" and req.options:
             if final_sel_idx is None or final_sel_idx < 0 or final_sel_idx >= len(req.options):
@@ -833,17 +835,36 @@ async def _solve_core(
             answer_val = chr(65 + final_sel_idx)
 
         elif req.q_type == "multi" and req.options:
-            if final_sel_indices:
-                valid_indices = [idx for idx in final_sel_indices if 0 <= idx < len(req.options)]
-                if not valid_indices:
-                    snapped = snap_to_closest_option(str(answer_val), req.options)
-                    valid_indices = [snapped] if snapped is not None else [0]
-                final_sel_indices = sorted(list(set(valid_indices)))
-                final_sel_texts = [req.options[idx] for idx in final_sel_indices]
-                final_canonical_keys = [chr(65 + idx) for idx in final_sel_indices]
-                final_sel_idx = final_sel_indices[0]
-                final_sel_text = ", ".join(final_sel_texts)
-                answer_val = ", ".join(final_canonical_keys)
+            raw_indices = list(final_sel_indices) if final_sel_indices else []
+            if not raw_indices:
+                from backend.core.consensus import extract_multi_indices
+                raw_indices = list(extract_multi_indices(solver_res, len(req.options)))
+            if not raw_indices and answer_val:
+                for p in re.split(r"[,;\s]+", str(answer_val)):
+                    s = p.strip().upper()
+                    if len(s) == 1 and "A" <= s <= "P":
+                        idx = ord(s) - 65
+                        if 0 <= idx < len(req.options):
+                            raw_indices.append(idx)
+            valid_indices = [idx for idx in raw_indices if 0 <= idx < len(req.options)]
+            if not valid_indices:
+                snapped = snap_to_closest_option(str(answer_val), req.options)
+                valid_indices = [snapped] if snapped is not None else [0]
+            final_sel_indices = sorted(list(set(valid_indices)))
+            final_sel_texts = [str(req.options[idx]) for idx in final_sel_indices]
+            final_canonical_keys = [chr(65 + idx) for idx in final_sel_indices]
+            final_sel_idx = final_sel_indices[0]
+            final_sel_text = ", ".join(final_sel_texts)
+            answer_val = ", ".join(final_canonical_keys)
+
+        elif req.q_type == "order" and req.options:
+            perm = solver_res.permutation_indices
+            if not perm or len(perm) != len(req.options) or set(perm) != set(range(len(req.options))):
+                perm = list(range(len(req.options)))
+            final_perm_indices = perm
+            final_ordered_texts = [str(req.options[i]) for i in perm]
+            letters = [chr(65 + i) for i in perm]
+            answer_val = ",".join(letters)
 
         response = SolveResponse(
             status="ok" if is_ok else "uncertain",
@@ -854,8 +875,8 @@ async def _solve_core(
             selected_indices=final_sel_indices,
             selected_texts=final_sel_texts,
             canonical_keys=final_canonical_keys,
-            permutation_indices=solver_res.permutation_indices,
-            ordered_texts=solver_res.ordered_texts,
+            permutation_indices=final_perm_indices,
+            ordered_texts=final_ordered_texts,
             reason=solver_res.reason or "",
             confidence_tier=tier,
             confidence_label=confidence_label,

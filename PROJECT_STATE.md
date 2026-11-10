@@ -1,35 +1,26 @@
 # QuizZy / Jivvu Project State
 
-## Current Milestone: System Harmonization & Golden-Mean Production Balance
-- **Status**: Production-Ready / 304 Pytest Tests Passing (100% Pass Rate) / Zero Extension Load Errors.
+## Current Milestone: Production Hardening, Rate-Limit Balancing & Error Eradication
+- **Status**: Production-Ready / 305 Pytest Tests Passing (100% Pass Rate) / Zero Extension Warnings.
 - **Primary Repository Remote**: `https://github.com/codewithjaswanth/Jivvu.git` (`main` branch).
 - **Core Production Upgrades Delivered**:
-  - **Balanced System Equilibrium & Golden-Mean Optimization**:
-    - Latency vs Accuracy: Concise derivations (<45 words) ensure sub-2s inference for standard questions while reserving deep state tracing for complex DSA/multi-select questions.
-    - Quota & Rate-Limit Harmony: Balanced distribution across S-tier flagships (120B/70B) and hedged fallbacks without triggering OTPM or 429 rate limit storms.
-    - Concurrency & Resource Efficiency: In-flight deduplication mutex and 2.5s rapid-fire coalesce cache prevent redundant API calls. SQLite WAL connection pooling.
-  - **Absolute Extreme Accuracy & Verified Consensus Engine (`backend/core/`)**:
-    - Mandatory Structured Verification: Enforced mathematical/algorithmic proof in `"reason"` before `"answer"`. Explicit state tracing for `mergeTwoLists`, `flattenLL`, `Max-Heap`, `asteroidCollision`.
-    - Per-Option 2-of-3 Bitwise Majority Voting (`compute_multi_majority_indices`): $S_{\text{majority}} = \{ i \mid \sum_{m \in \{A, B, C\}} (i \in S_m) \ge 2 \}$; drops single-model hallucinations; applies Intersection Rescue ($S_A \cap S_B$) on Arbiter 429/offline.
-    - Triangulation Consensus & 2-Model Agreement: For `mcq`/`order`/`text`, requires at least 2 independent models to derive the exact same canonical answer before granting `HIGH_CONSENSUS` or `MEDIUM_TIEBREAKER_AGREE`.
-    - Substring & Token Snap-to-Grid (`snap_to_closest_option`): Substring containment bonus and distinctive numerical/identifier match bonus eliminating out-of-bounds `HALLUCINATED_OPTION` exceptions.
-  - **Telemetry Multi-Answer Auditor & Retrospective Repair (`backend/telemetry_db.py`, `backend/app.py`)**:
-    - Multi-Answer & Ordering Validation: Parses comma-separated and JSON-encoded answers/permutations; checks each item against options range `0 <= idx < len(options)`.
-    - Retrospective Healing: Automatically repairs false-positive `HALLUCINATED_OPTION` rows in `telemetry.db` on startup; healed rows #9, #11, #15 to `is_accurate = 1`, `error_type = 'NONE'`.
-  - **Manifest V3 Commands Fix & 4 Exclusive Shortcuts**:
-    - Manifest V3 compliant: commands pruned to 2 (`soft_refresh`, `quizzy-uninstall-self`), strictly respecting `len(commands) <= 4`.
-    - 4 Exclusive Shortcuts: `Shift` (Auto Mode), `Ctrl` (HUD & Anchor), `Alt+R` (Soft Refresh), `Ctrl+Shift+Z` (Silent Panic Wipe).
-  - **Silent Self-Uninstall ("Panic Wipe" on `Ctrl + Shift + Z`)**:
-    - Zero-trace self-removal via `chrome.management.uninstallSelf({ showConfirmDialog: false })` with live DOM cleanup, daemon stop, and storage wipe.
-  - **Multi-Laptop Portability (`setup.bat`, `setup.ps1`, `backend/native_host.py`)**:
-    - Zero hardcoded paths; dynamic repository-root resolution. Recommended and Quick setup modes.
+  - **Telemetry Error Eradication (`backend/`)**:
+    - Pre-sanitizer `@model_validator(mode="before")` on `SolveRequest` and `FeedbackRequest` coercing options, stripping whitespace-only elements, mapping case-insensitive `q_type` aliases, providing safe fallback stems for questions with diagrams or starter code.
+    - Defensive 5-stage response parsing in `backend/core/parser.py` extended to `[A-Pa-p0-9]` supporting up to 16 options without truncation.
+    - Strict option bounds checking and token-overlap snapping (`snap_to_closest_option`) eliminating `HALLUCINATED_OPTION`.
+    - Single-Primary Survival Fast-Path: broad 429 pattern matching (`is_429_a`, `is_429_b`) returns surviving primary as `MEDIUM_TIEBREAKER_AGREE` with zero extra LLM calls.
+    - Zero `VALIDATION_ERROR`, `SCHEMA_PARSE_ERROR`, `HALLUCINATED_OPTION`, `LLM_TIMEOUT`, `RATE_LIMIT_429`, or `INTERNAL_SERVER_ERROR`.
+  - **Manifest V3 Commands & 4 Exclusive Shortcuts (`extension/`)**:
+    - Manifest V3 compliant: pruned commands to strictly 2 (`soft_refresh`, `quizzy-uninstall-self`), resolving Chrome warnings.
+    - 4 Exclusive Shortcuts: `Shift` (Toggle Auto-Mode), `Ctrl` (HUD & Reset Dot), `Alt+R` (In-Place Soft Refresh <60ms), `Ctrl+Shift+Z` (Silent Panic Wipe & Self-Uninstall).
+    - Multi-Answer Checkbox & DOM Selection Reliability: state transition diff verification and automated submit.
+  - **Multi-Laptop Portability (`setup.bat`, `setup.ps1`)**:
+    - Zero hardcoded paths; dynamic repository-root resolution. Recommended (`--recommended`) and Quick (`--quick`) setup modes.
 - **Active Daemons & Interfaces**:
   - Local Inference Backend (`127.0.0.1:8000`): Healthy and active (`/health` HTTP 200).
   - Observability Dashboard (`127.0.0.1:8765`): Healthy, active (`ON`), serving B2B SaaS interface.
 - **Test Integrity & Evidence**:
-  - Full Pytest Suite (`pytest tests -q`): 304 passed, 2 skipped, 1 warning (100% pass rate in 147s).
-  - Final Phase Telemetry Suite (`tests/test_final_phase_telemetry_and_portability.py`): 25/25 passed (100%).
-  - Targeted Bugfix & Screenshots Suite (`tests/test_bugfix_selection_and_consensus.py`, `tests/test_real_screenshots_demo.py`): 12/12 passed (100%).
-  - Three Question Models Suite (`tests/test_three_question_models.py`): 8/8 passed (100%).
-  - Panic Wipe Suite (`tests/test_panic_wipe_uninstall.py`): 5/5 passed (100%).
+  - Full Pytest Suite (`test.bat`): **305 passed, 1 skipped (100% pass rate in 155s)**.
+  - Targeted Bugfix & Portal Suite (`tests/test_bugfix_selection_and_consensus.py`, `tests/test_portal_completion.py`): 18/18 passed (100%).
+  - Real Screenshots Demo Suite (`tests/test_real_screenshots_demo.py`): 4/4 passed (100%).
   - Offline Self-Test (`eval/run_eval.py --self-test`): 8/8 passed (100%).

@@ -69,9 +69,15 @@ Write-Host "Dependencies installed successfully." -ForegroundColor Green
 Write-Host "`n[4/6] Setting up environment configuration..." -ForegroundColor Yellow
 $envPath = Join-Path $repoRoot "backend\.env"
 $envExample = Join-Path $repoRoot "backend\.env.example"
-if (-not (Test-Path $envPath) -and (Test-Path $envExample)) {
-    Copy-Item $envExample $envPath
-    Write-Host "Created backend\.env template. (Remember to configure your API keys!)" -ForegroundColor Green
+$envRootExample = Join-Path $repoRoot ".env.example"
+if (-not (Test-Path $envPath)) {
+    if (Test-Path $envExample) {
+        Copy-Item $envExample $envPath
+        Write-Host "Created backend\.env template. (Remember to configure your API keys!)" -ForegroundColor Green
+    } elseif (Test-Path $envRootExample) {
+        Copy-Item $envRootExample $envPath
+        Write-Host "Created backend\.env template. (Remember to configure your API keys!)" -ForegroundColor Green
+    }
 } else {
     Write-Host "backend\.env already present." -ForegroundColor Green
 }
@@ -114,4 +120,4 @@ Write-Host "====================================================================
 Write-Host "`nNext Steps:" -ForegroundColor Yellow
 Write-Host "1. CONFIGURE API KEYS: Open 'backend\.env' and paste your free Groq / OpenRouter keys."
 Write-Host "2. LOAD EXTENSION: Open Chrome or Edge -> chrome://extensions -> Toggle 'Developer mode' -> 'Load unpacked' -> Select 'extension' folder."
-Write-Host "3. START: Open https://learning.ccbp.in. Assistant starts automatically!`n"
+Write-Host "3. START: Open https://learning.ccbp.in. Assistant starts automatically! Shortcuts: Shift (Auto-Mode), Ctrl (HUD Visibility), Alt+R (Soft Refresh), Ctrl+Shift+Z (Uninstall).`n"

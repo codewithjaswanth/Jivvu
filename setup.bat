@@ -4,6 +4,8 @@ title QuizZy / Jivvu One-Click Setup
 cd /d "%~dp0"
 
 set "SETUP_MODE=RECOMMENDED"
+if /i "%~1"=="--recommended" set "SETUP_MODE=RECOMMENDED"
+if /i "%~1"=="-r" set "SETUP_MODE=RECOMMENDED"
 if /i "%~1"=="--quick" set "SETUP_MODE=QUICK"
 if /i "%~1"=="-q" set "SETUP_MODE=QUICK"
 if /i "%~1"=="/q" set "SETUP_MODE=QUICK"
@@ -70,6 +72,9 @@ if not exist "%~dp0backend\.env" (
     if exist "%~dp0backend\.env.example" (
         copy "%~dp0backend\.env.example" "%~dp0backend\.env" >nul
         echo Created backend\.env from template.
+    ) else if exist "%~dp0.env.example" (
+        copy "%~dp0.env.example" "%~dp0backend\.env" >nul
+        echo Created backend\.env from template.
     )
 ) else (
     echo backend\.env already exists.
@@ -124,7 +129,7 @@ echo.
 echo 3. READY TO USE:
 echo    Open https://learning.ccbp.in in Chrome.
 echo    The backend and assistant will start automatically in the background!
-echo    Use Shift to toggle Auto-Mode, Alt+S to solve, and Ctrl+Alt+0 for portal.
+echo    Shortcuts: Shift (Auto-Mode), Ctrl (HUD Visibility), Alt+R (Soft Refresh), Ctrl+Shift+Z (Uninstall).
 echo =====================================================================
 echo.
 if "%SETUP_MODE%"=="RECOMMENDED" (

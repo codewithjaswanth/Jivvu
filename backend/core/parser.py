@@ -299,15 +299,15 @@ def parse_llm_response(raw_text: str, options: Optional[List[str]] = None) -> Pa
                 }
                 break
 
-        # 5b. Explicit Final Answer / Answer: patterns
+        # 5b. Explicit Final Answer / Answer: patterns (supporting options A-P)
         if not data:
             final_patterns = [
                 r'(?:final\s+answer|conclusion)\s*[:\-]?\s*\[?([A-Pa-p0-9,\s\'"]+)\]?',
-                r'(?:correct\s+(?:answer|option|choice)\s+is|answer\s*[:\-]|option\s*[:\-]?|choice\s*[:\-]?|therefore|hence|thus)\s*[\(\[]?([A-Fa-f0-9])[\)\]]?(?:\s|$|\.|\,)',
-                r'(?:option|choice|answer)\s+([A-D])\s+(?:is\s+correct|is\s+the\s+correct|is\s+right)',
-                r'\b([A-D])\s+is\s+(?:the\s+)?correct\s+(?:option|choice|answer)\b',
-                r'[\(\[]([A-D])[\)\]]\s+(?:is\s+correct|is\s+the\s+correct)',
-                r'(?:select|choose)\s+option\s+([A-D])\b',
+                r'(?:correct\s+(?:answer|option|choice)\s+is|answer\s*[:\-]|option\s*[:\-]?|choice\s*[:\-]?|therefore|hence|thus)\s*[\(\[]?([A-Pa-p0-9])[\)\]]?(?:\s|$|\.|\,)',
+                r'(?:option|choice|answer)\s+([A-Pa-p0-9])\s+(?:is\s+correct|is\s+the\s+correct|is\s+right)',
+                r'\b([A-Pa-p0-9])\s+is\s+(?:the\s+)?correct\s+(?:option|choice|answer)\b',
+                r'[\(\[]([A-Pa-p0-9])[\)\]]\s+(?:is\s+correct|is\s+the\s+correct)',
+                r'(?:select|choose)\s+option\s+([A-Pa-p0-9])\b',
             ]
             for src in search_sources:
                 for pat in final_patterns:

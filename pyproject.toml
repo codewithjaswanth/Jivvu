@@ -21,3 +21,6 @@ quizzy = "backend.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["backend*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
