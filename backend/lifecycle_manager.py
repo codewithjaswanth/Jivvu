@@ -454,3 +454,40 @@ def record_heartbeat(active_tabs: int = 1, url: str = "") -> Dict[str, Any]:
         "active_ccbp_tabs": state["active_ccbp_tabs"],
         "last_heartbeat": state["last_heartbeat"],
     }
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description="QuizZy Backend Lifecycle Manager")
+    parser.add_argument("--start", action="store_true", help="Start the backend daemon")
+    parser.add_argument("--stop", action="store_true", help="Stop the backend daemon")
+    parser.add_argument("--status", action="store_true", help="Check backend status")
+    parser.add_argument("--heartbeat", action="store_true", help="Record heartbeat")
+    parser.add_argument("--tabs", type=int, default=1, help="Active CCBP tabs for heartbeat")
+    args = parser.parse_args(argv)
+
+    if args.start:
+        res = start_backend(source="cli")
+        print(json.dumps(res))
+        return 0 if res.get("online") else 1
+    elif args.stop:
+        res = stop_backend(reason="cli_stop")
+        print(json.dumps(res))
+        return 0
+    elif args.heartbeat:
+        res = record_heartbeat(active_tabs=args.tabs)
+        print(json.dumps(res))
+        return 0
+    elif args.status:
+        state = get_state()
+        state["online"] = is_backend_healthy()
+        print(json.dumps(state))
+        return 0 if state["online"] else 1
+    else:
+        parser.print_help()
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
