@@ -48,14 +48,8 @@ def normalize_model_identifier(raw: Optional[str]) -> str:
     if low in ("auto", "default", "intelligent_cascade", "all", "dual_engine"):
         return AUTO_ID
 
-    # Direct Gemini 3.8 Flash aliases
-    if clean in ("gemini-3.8-flash", "models/gemini-3.8-flash", "gemini-flash") or low in (
-        "gemini_3.8_flash", "gemini_3_8_flash", "gemini_3.8", "gemini_38", "gemini_flash"
-    ) or (clean.startswith("models/") and clean[7:].strip() in ("gemini-3.8-flash", "gemini-flash")):
-        return "gemini-3.8-flash"
-
     # Primary Profiles
-    if low in ("primary_a", "primarya", "pri_a") or "primary_a" in low:
+    if low in ("primary_a", "primarya", "pri_a", "gemini_3.8_flash", "gemini_3_8_flash", "gemini_3.8", "gemini_38") or "primary_a" in low:
         return PRIMARY_A_ID
     if low in ("primary_b", "primaryb", "pri_b", "gpt_oss_120b", "openai/gpt_oss_120b") or "primary_b" in low:
         return PRIMARY_B_ID
@@ -71,10 +65,7 @@ def normalize_model_identifier(raw: Optional[str]) -> str:
     # Specific Model Formats:
     # 1. gemini:model_name
     if clean.startswith("gemini:"):
-        sub = clean[7:].strip()
-        if sub.startswith("models/"):
-            sub = sub[7:].strip()
-        return f"gemini:{sub}"
+        return f"gemini:{clean[7:].strip()}"
     # 2. groq:model_name or groq/model_name
     if clean.startswith("groq:"):
         return f"groq:{clean[5:].strip()}"
@@ -171,8 +162,6 @@ def get_model_display_label(model_id: str) -> str:
         return "⚡ Auto (Gemini 3.8 Flash + Groq Dual-Engine)"
     if model_id == PRIMARY_A_ID:
         return "Primary A (gemini-3.8-flash - Google Gemini)"
-    if model_id in ("gemini-3.8-flash", "gemini:gemini-3.8-flash"):
-        return "Gemini • gemini-3.8-flash"
     if model_id == PRIMARY_B_ID:
         return "Primary B (openai/gpt-oss-120b - Groq)"
     if model_id == GEMINI_ONLY_ID:
@@ -353,10 +342,10 @@ def build_custom_text_cascade(
         return list(base_cascade)
 
     # 2. PRIMARY A: Prioritize Primary A model at position 0
-    if norm in (PRIMARY_A_ID, "gemini-3.8-flash", "gemini:gemini-3.8-flash"):
+    if norm == PRIMARY_A_ID:
         pri_a_model = "gemini-3.8-flash"
         pri_a_prov = "gemini"
-        if norm == PRIMARY_A_ID and config and "primary_a" in config and isinstance(config["primary_a"], dict):
+        if config and "primary_a" in config and isinstance(config["primary_a"], dict):
             pri_a_model = config["primary_a"].get("model", pri_a_model)
             pri_a_prov = config["primary_a"].get("provider", pri_a_prov)
 

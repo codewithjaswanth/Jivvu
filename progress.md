@@ -1010,26 +1010,6 @@ Implemented and strictly verified across live `learning.ccbp.in` question models
   - **Deterministic Offline Self-Test:** **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
   - **Live Endpoints & Daemon Verification:** Both Port 8000 and Port 8765 queried via HTTP, reporting active 16-key telemetry with live token accounting.
 
-### Session Update: Explicit Model Selection for Gemini 3.8 Flash & Quota Gating (November 2026)
-- **Goal:** Diagnose and resolve explicit manual model selection of `gemini-3.8-flash` so requests route strictly to the Gemini provider adapter across the 4-key pool with zero Groq leakage, clean 429 error handling, and no HTTP 500s.
-- **Root Cause & Fixes Delivered**:
-  1. **Direct Gemini Delegation (`backend/core/llm_client.py:solve_with_gemini_direct`)**:
-     - Explicit Gemini requests bypass the Groq race and Groq fallback cascade entirely.
-     - Direct execution across the 4-key pool with automatic failover and key rotation.
-  2. **Slug Normalization & Provider Aliasing (`backend/core/providers.py`, `backend/model_manager.py`)**:
-     - `normalize_gemini_model()` strips prefixes (`gemini:`, `models/`) and maps all aliases (`gemini-flash`, `models/gemini-3.8-flash`) to canonical `"gemini-3.8-flash"`.
-     - Added `call_gemini_provider = call_gemini_primary` with adaptive thinking budget (`1024` or `2048`) and multi-part thought filtering.
-  3. **Robust Non-500 Error Gating (`backend/core/llm_client.py`)**:
-     - When all Gemini keys return 429, returns clean `status="UNCERTAIN"` with `confidence_tier="RATE_LIMIT_EXHAUSTED"` (HTTP 200).
-     - Unrecognized model slugs return `confidence_tier="INVALID_MODEL"` (HTTP 200).
-     - Automated `auto` mode preserves dual-engine racing and graceful cascade fallbacks.
-- **Verification Evidence**:
-  - **Full Pytest Suite:** **319/319 passing (100%)** across all test suites (3 skipped, 1 warning in 133s).
-  - **Gemini 3.8 Flash Suite:** **11/11 passing (100%)** in `tests/test_gemini_38_flash_aptitude_and_vision.py`.
-  - **Model Selection Suite:** **9/9 passing (100%)** in `tests/test_model_selection.py`.
-  - **Deterministic Offline Self-Test:** **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
-  - **Live Runtime Verification:** Tested `POST /solve` against live `:8000`: `model="gemini-3.8-flash"` returns `RATE_LIMIT_EXHAUSTED` (HTTP 200), `model="invalid_slug"` returns `INVALID_MODEL` (HTTP 200), and `model="auto"` returns `status: "ok"` (HTTP 200).
-
 ---
 
 > *This document represents the complete, verified state of the QuizZy / Jivvu project as of November 2026. All components have been verified via automated tests and runtime audits.*

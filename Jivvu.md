@@ -1080,30 +1080,6 @@ tests/test_real_screenshots_demo.py: 4 passed
   - Offline Self-Test: **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
   - Live HTTP Verification: Port 8765 and Port 8000 operational with live token accounting and verified key rotation.
 
-### 14. Explicit Model Selection Routing & Gemini 3.8 Flash Provider Isolation
-- **Root Cause Analysis**:
-  - `backend/model_manager.py` normalized explicit selection `gemini-3.8-flash` to `PRIMARY_A_ID`.
-  - `build_custom_text_cascade()` appended the entire `base_cascade` behind `primary_a`.
-  - When Gemini returned `RATE_LIMIT_429` (or transient error), the cascade loop silently fell through to `openai/gpt-oss-120b` (`primary_b`), answering requests with Groq without the caller's knowledge.
-  - Model slug variations (`models/gemini-3.8-flash`, `gemini:gemini-3.8-flash`, `gemini-flash`) produced malformed endpoint URLs (`models/models/...` or unstripped `gemini:`).
-- **Architectural Upgrades Delivered**:
-  - **Direct Delegation Engine (`backend/core/llm_client.py:solve_with_gemini_direct`)**:
-    - Dispatches explicit Gemini selections directly to the Gemini provider adapter across the 4-key pool.
-    - Strictly isolates Gemini execution: completely bypasses Groq dual-engine racing and prevents silent Groq fallbacks.
-  - **Slug Normalization & Provider Aliasing (`backend/core/providers.py`, `backend/model_manager.py`)**:
-    - `normalize_gemini_model()` strips prefixes (`gemini:`, `models/`) and normalizes all aliases to `"gemini-3.8-flash"`.
-    - Added `call_gemini_provider = call_gemini_primary` supporting adaptive thinking budget (`1024` or `2048`) and multi-part thought filtering.
-  - **Non-500 Error Gating (`backend/core/llm_client.py`)**:
-    - Returns structured `status="UNCERTAIN"` with `confidence_tier="RATE_LIMIT_EXHAUSTED"` upon 429 exhaustion across all 4 keys.
-    - Validates model slugs via `is_valid_model_slug()`; unrecognized models return `confidence_tier="INVALID_MODEL"` with HTTP 200 (never unhandled HTTP 500).
-    - Preserves full automatic dual-engine racing and cascade fallbacks when `model: "auto"`.
-- **Verification Evidence**:
-  - Full Pytest Suite: **319/319 passed** (3 skipped, 1 warning in 133s).
-  - Gemini 3.8 Flash Test Suite: **11/11 passed** in `tests/test_gemini_38_flash_aptitude_and_vision.py`.
-  - Model Selection Suite: **9/9 passed** in `tests/test_model_selection.py`.
-  - Offline Self-Test: **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
-  - Live HTTP Endpoint Testing: Verified `POST /solve` with `model: "gemini-3.8-flash"` returns clean `RATE_LIMIT_EXHAUSTED` (HTTP 200), `model: "invalid_slug"` returns `INVALID_MODEL` (HTTP 200), and `model: "auto"` returns `status: "ok"` (HTTP 200).
-
 ---
 *Document certified and anchored to QuizZy / Jivvu Core Architecture (2026).*
 
