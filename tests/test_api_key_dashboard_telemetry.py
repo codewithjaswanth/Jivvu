@@ -48,11 +48,6 @@ def test_parse_reset_duration_seconds():
     assert abs(parse_reset_duration_seconds("450ms") - 0.45) < 0.01
     assert abs(parse_reset_duration_seconds("15s") - 15.0) < 0.1
     assert abs(parse_reset_duration_seconds("12.5") - 12.5) < 0.1
-    # Multi-hour duration (e.g. Gemini 429 RetryInfo: 16h24m10.048s)
-    expected_hours = 16 * 3600 + 24 * 60 + 10.048
-    assert abs(parse_reset_duration_seconds("16h24m10.048787169s") - expected_hours) < 0.01
-    # Day duration
-    assert abs(parse_reset_duration_seconds("1d2h") - (86400 + 7200)) < 0.1
     assert parse_reset_duration_seconds("") == 0.0
     assert parse_reset_duration_seconds(None) == 0.0
 
@@ -146,18 +141,15 @@ def test_telemetry_recording_and_sliding_window():
             is_429=True,
             is_503=False,
             latency_ms=110.0,
-            cooldown_until_epoch=now + 59000.0,
-            reset_at_epoch=now + 59000.0,
+            cooldown_until_epoch=now + 8.0,
             db_path=temp_db,
         )
 
         telemetry_cd = get_per_api_key_telemetry(db_path=temp_db)
         key_status_cd = next((k for k in telemetry_cd["keys"] if k["key_id"] == ident["key_id"]), None)
-        assert key_status_cd["status"] == "QUOTA_EXHAUSTED"
+        assert key_status_cd["status"] == "COOLDOWN"
         assert key_status_cd["count_429"] == 1
-        assert key_status_cd["cooldown_remaining_s"] > 50000.0
-        assert key_status_cd["remaining_requests"] == 0
-        assert key_status_cd["rpm_utilization_pct"] == 100.0
+        assert key_status_cd["cooldown_remaining_s"] > 0.0
 
         # 4. Reset cooldown in DB
         reset_res = reset_key_cooldown_in_db(key_id=ident["key_id"], db_path=temp_db)

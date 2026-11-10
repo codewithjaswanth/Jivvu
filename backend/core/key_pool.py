@@ -523,21 +523,12 @@ def get_gemini_inflight(key: str) -> int:
     return _gemini_key_inflight.get(key, 0)
 
 
-def reset_gemini_key_cooldown(key: Optional[str] = None) -> None:
+def reset_gemini_key_cooldown() -> None:
     global _gemini_key_cooldown_until, _gemini_key_inflight, _gemini_key_stats, _gemini_key_rr_idx
-    if not key or key == "all":
-        _gemini_key_cooldown_until.clear()
-        _gemini_key_inflight.clear()
-        _gemini_key_stats.clear()
-        _gemini_key_rr_idx = 0
-    else:
-        _gemini_key_cooldown_until.pop(key, None)
-        _gemini_key_inflight.pop(key, None)
-        for k in list(_gemini_key_cooldown_until.keys()):
-            ident = get_key_identity("gemini", k)
-            if ident.get("key_id") == key:
-                _gemini_key_cooldown_until.pop(k, None)
-                _gemini_key_inflight.pop(k, None)
+    _gemini_key_cooldown_until.clear()
+    _gemini_key_inflight.clear()
+    _gemini_key_stats.clear()
+    _gemini_key_rr_idx = 0
 
 
 def load_gemini_api_keys() -> List[str]:
@@ -756,24 +747,6 @@ def get_key_identity(provider: str, raw_key: str, index: int = 0) -> Dict[str, A
             "key_label": f"{prov.upper()} Key #{index + 1}",
             "masked_key": "EMPTY",
         }
-    actual_idx = index
-    if actual_idx == 0 and k:
-        try:
-            if prov == "gemini":
-                keys = load_gemini_api_keys()
-                if k in keys:
-                    actual_idx = keys.index(k)
-            elif prov == "groq":
-                keys = load_groq_api_keys()
-                if k in keys:
-                    actual_idx = keys.index(k)
-            elif prov == "openrouter":
-                keys = load_openrouter_api_keys()
-                if k in keys:
-                    actual_idx = keys.index(k)
-        except Exception:
-            pass
-
     key_id = hashlib.sha256(f"{prov}:{k}".encode("utf-8")).hexdigest()[:10]
     if len(k) <= 10:
         masked = k[:3] + "..." + k[-2:]
@@ -782,7 +755,7 @@ def get_key_identity(provider: str, raw_key: str, index: int = 0) -> Dict[str, A
     return {
         "key_id": key_id,
         "provider": prov,
-        "key_label": f"{prov.upper()} Key #{actual_idx + 1}",
+        "key_label": f"{prov.upper()} Key #{index + 1}",
         "masked_key": masked,
     }
 
@@ -821,7 +794,7 @@ def get_all_configured_keys() -> List[Dict[str, Any]]:
 
 def parse_reset_duration_seconds(raw_val: Any) -> float:
     """
-    Parse rate-limit reset duration strings ('16h24m10.048s', '2m59.5s', '450ms', '12s', '15.2', or epoch timestamp)
+    Parse rate-limit reset duration strings ('2m59.5s', '450ms', '12s', '15.2', or epoch timestamp)
     into a normalized duration in seconds.
     """
     if raw_val is None:
@@ -847,31 +820,19 @@ def parse_reset_duration_seconds(raw_val: Any) -> float:
     total_sec = 0.0
     s_work = s
 
-    # 1. Days
-    d_match = re.search(r"(\d+(?:\.\d+)?)\s*d(?:ay?s?)?(?![a-zA-Z])", s_work, re.IGNORECASE)
-    if d_match:
-        total_sec += float(d_match.group(1)) * 86400.0
-        s_work = s_work[:d_match.start()] + " " + s_work[d_match.end():]
-
-    # 2. Hours
-    h_match = re.search(r"(\d+(?:\.\d+)?)\s*h(?:(?:ou)?r?s?)?(?![a-zA-Z])", s_work, re.IGNORECASE)
-    if h_match:
-        total_sec += float(h_match.group(1)) * 3600.0
-        s_work = s_work[:h_match.start()] + " " + s_work[h_match.end():]
-
-    # 3. Milliseconds (check first before 's')
+    # 1. Milliseconds (check first before 's')
     ms_match = re.search(r"(\d+(?:\.\d+)?)\s*ms(?![a-zA-Z])", s_work, re.IGNORECASE)
     if ms_match:
         total_sec += float(ms_match.group(1)) / 1000.0
         s_work = s_work[:ms_match.start()] + " " + s_work[ms_match.end():]
 
-    # 4. Minutes
+    # 2. Minutes
     m_match = re.search(r"(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?(?![a-zA-Z])", s_work, re.IGNORECASE)
     if m_match:
         total_sec += float(m_match.group(1)) * 60.0
         s_work = s_work[:m_match.start()] + " " + s_work[m_match.end():]
 
-    # 5. Seconds
+    # 3. Seconds
     s_match = re.search(r"(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?(?![a-zA-Z])", s_work, re.IGNORECASE)
     if s_match:
         total_sec += float(s_match.group(1))

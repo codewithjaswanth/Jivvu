@@ -1104,37 +1104,6 @@ tests/test_real_screenshots_demo.py: 4 passed
   - Offline Self-Test: **8/8 passed (100%)** via `eval/run_eval.py --self-test`.
   - Live HTTP Endpoint Testing: Verified `POST /solve` with `model: "gemini-3.8-flash"` returns clean `RATE_LIMIT_EXHAUSTED` (HTTP 200), `model: "invalid_slug"` returns `INVALID_MODEL` (HTTP 200), and `model: "auto"` returns `status: "ok"` (HTTP 200).
 
-### 15. API Key Quota & Telemetry Observability Suite Root-Cause Fixes & Audit
-- **Root Cause Analysis**:
-  - **Key Label Collisions**: `get_key_identity(provider, api_key)` defaulted `index=0`, causing every key to be upserted into SQLite as `GEMINI Key #1` or `GROQ Key #1`.
-  - **Missing Multi-Hour/Day Duration Parsing**: Google AI Studio returns reset delays like `16h24m10.048s` (~59,050s). `parse_reset_duration_seconds()` only parsed `ms`, `m`, and `s`, dropping the 16 hours (`57,600s`).
-  - **Gemini 429 Body Extraction**: Google AI Studio does not send HTTP `retry-after` response headers; delay is embedded in the response body JSON under `details` -> `@type: "...RetryInfo"` -> `retryDelay` and in `error.message`.
-  - **Hardcoded 8.0s Clamp**: `min(retry_after_sec, 8.0)` clamped daily quota exhaustion down to 8 seconds.
-  - **Premature Status & Quota Reset**: In `get_per_api_key_telemetry()`, after 60s without a request, `rem_req` ignored `row["remaining_requests"]` and reset to 1000, while status reverted from `COOLDOWN` to `HEALTHY`.
-  - **Utilization Inversion**: Keys with 0 remaining requests showed 0.0% utilization (empty green bar) instead of 100% (red bar).
-  - **Timer Overflow**: Without hour formatting, 16 hours rendered as `Reset in 984:10`.
-- **Architectural Upgrades Delivered**:
-  - **Deterministic Key Identity (`backend/core/key_pool.py`)**:
-    - Auto-detects 0-indexed position across loaded Gemini (4 keys), Groq (7 keys), and OpenRouter (5 keys) pools.
-    - Each key card and SQLite record displays its distinct label (`GEMINI Key #1` through `#4`, `GROQ Key #1` through `#7`, etc.).
-  - **Hours & Days Rate Limit Parsing (`backend/core/key_pool.py:parse_reset_duration_seconds`)**:
-    - Added regex extraction for days (`d`) and hours (`h`) before minutes/seconds; correctly parses `16h24m10.048s` to `59050.048s`.
-  - **Gemini 429 Body Extraction & Unclamped Cooldown (`backend/core/providers.py`)**:
-    - Parses error JSON `details` for `retryDelay` and regex matches `retry in ...` from `error.message`.
-    - Eliminates the 8.0s clamp on daily quota exhaustion; sets `remaining_requests = 0` immediately.
-  - **Accurate Quota State & 100% Utilization Accounting (`backend/telemetry_db.py`)**:
-    - Differentiates `COOLDOWN` vs `QUOTA_EXHAUSTED` (delays > 300s or 0% success with repeated 429s).
-    - Keys with 0 remaining requests or exhausted state display 100% utilization.
-    - Added `heal_api_key_labels_and_status()` on DB init to heal historical label collisions.
-    - `reset_key_cooldown_in_db()` clears both cooldown and reset epochs.
-  - **Frontend Countdown & UI Polish (`dashboard.js`, `styles.css`)**:
-    - Added `formatDuration()` to format multi-hour countdowns (e.g., `Reset in 15h 54m 01s`).
-    - Added `.status-pill-exhausted` and `.key-card.status-quota_exhausted` with rose styling.
-- **Verification Evidence**:
-  - Full Pytest Suite: **319/319 passed** across all 39 test suites (3 skipped, 1 warning in 141s).
-  - Telemetry Suite: **5/5 passed** in `tests/test_api_key_dashboard_telemetry.py`.
-  - Live HTTP & Playwright Browser Audit: Confirmed cards render accurate quota, countdowns, distinct labels, and reset triggers.
-
 ---
 *Document certified and anchored to QuizZy / Jivvu Core Architecture (2026).*
 

@@ -55,7 +55,6 @@ clean_*.py
 rebuild_*.py
 task.md
 .taste-skill/
-.playwright-mcp/
 scratch/cache_dump.json
 scratch/telemetry_recent.json
 

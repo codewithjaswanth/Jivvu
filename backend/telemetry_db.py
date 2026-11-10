@@ -172,36 +172,9 @@ def init_db(db_path: Optional[Union[str, Path]] = None) -> None:
 
     # Automatically heal historical false-positive HALLUCINATED_OPTION entries
     repair_historical_hallucinated_options(db_path)
-    # Automatically heal any mismatched key labels in api_key_status
-    heal_api_key_labels_and_status(db_path)
 
 
 init_telemetry_db = init_db
-
-
-def heal_api_key_labels_and_status(db_path: Optional[Union[str, Path]] = None) -> int:
-    """Heal any mismatched key_label or stalled state in api_key_status."""
-    try:
-        from backend.core.key_pool import get_all_configured_keys
-        configured = get_all_configured_keys()
-        path = resolve_db_path(db_path)
-        if not path.is_file():
-            return 0
-        conn = get_db_connection(path)
-        count = 0
-        try:
-            with conn:
-                for c in configured:
-                    cur = conn.execute(
-                        "UPDATE api_key_status SET key_label = ?, provider = ? WHERE key_id = ?",
-                        (c["key_label"], c["provider"], c["key_id"]),
-                    )
-                    count += cur.rowcount
-        finally:
-            conn.close()
-        return count
-    except Exception:
-        return 0
 
 
 def repair_historical_hallucinated_options(db_path: Optional[Union[str, Path]] = None) -> int:
@@ -1039,19 +1012,11 @@ def record_api_key_call_telemetry(
 
     # Determine status
     if cooldown_until_epoch and cooldown_until_epoch > now:
-        if (cooldown_until_epoch - now > 300.0) or is_429:
-            status = "QUOTA_EXHAUSTED" if (cooldown_until_epoch - now > 300.0) else "COOLDOWN"
-        else:
-            status = "COOLDOWN"
-    elif is_429 or status_code == 429:
-        status = "QUOTA_EXHAUSTED"
+        status = "COOLDOWN"
     elif status_code in (401, 402, 403):
         status = "QUARANTINED"
     else:
         status = "HEALTHY"
-
-    if is_429 or status_code == 429:
-        remaining_requests = 0
 
     conn = get_db_connection(db_path)
     try:
@@ -1267,60 +1232,36 @@ def get_per_api_key_telemetry(db_path: Optional[Union[str, Path]] = None) -> Dic
             tpm_limit = (row["limit_tokens"] if (row and row["limit_tokens"]) else 200000)
             rpd_limit = 200
 
+        # Remaining requests & tokens
+        if row and row["remaining_requests"] is not None and last_used and (now - last_used < 60.0):
+            rem_req = max(0, row["remaining_requests"])
+        else:
+            rem_req = max(0, rpm_limit - rpm_curr) if rpm_limit else None
+
+        if row and row["remaining_tokens"] is not None and last_used and (now - last_used < 60.0):
+            rem_tok = max(0, row["remaining_tokens"])
+        else:
+            rem_tok = max(0, tpm_limit - tpm_curr) if tpm_limit else None
+
+        rpm_util = min(100.0, round((rpm_curr / rpm_limit) * 100.0, 1)) if rpm_limit else 0.0
+        tpm_util = min(100.0, round((tpm_curr / tpm_limit) * 100.0, 1)) if tpm_limit else 0.0
+
         # Status and Cooldown
         cooldown_remaining_s = max(0.0, round(cooldown_until - now, 1)) if (cooldown_until and cooldown_until > now) else 0.0
-        reset_remaining_s = max(0.0, round(reset_at - now, 1)) if (reset_at and reset_at > now) else 0.0
-
-        if cooldown_remaining_s > 0.0 or reset_remaining_s > 0.0:
-            active_wait = max(cooldown_remaining_s, reset_remaining_s)
-            if active_wait > 300.0 or (row and row["status"] in ("QUOTA_EXHAUSTED", "EXHAUSTED")):
-                status = "QUOTA_EXHAUSTED"
-            else:
-                status = "COOLDOWN"
+        if cooldown_remaining_s > 0.0:
+            status = "COOLDOWN"
         elif row and row["status"] in ("QUARANTINED", "FAILED"):
             status = "QUARANTINED"
-        elif total_reqs > 0 and succ_reqs == 0 and c429 > 0:
-            status = "QUOTA_EXHAUSTED"
         elif total_reqs == 0:
             status = "IDLE"
         else:
             status = "HEALTHY"
 
-        # Remaining requests & tokens
-        if status in ("COOLDOWN", "QUOTA_EXHAUSTED", "QUARANTINED"):
-            rem_req = 0
-            rem_tok = 0
-        elif row and row["remaining_requests"] is not None and last_used and (now - last_used < 60.0):
-            rem_req = max(0, row["remaining_requests"])
-        else:
-            rem_req = max(0, rpm_limit - rpm_curr) if rpm_limit else None
-
-        if status in ("COOLDOWN", "QUOTA_EXHAUSTED", "QUARANTINED"):
-            rem_tok = 0
-        elif row and row["remaining_tokens"] is not None and last_used and (now - last_used < 60.0):
-            rem_tok = max(0, row["remaining_tokens"])
-        else:
-            rem_tok = max(0, tpm_limit - tpm_curr) if tpm_limit else None
-
-        if status in ("COOLDOWN", "QUOTA_EXHAUSTED", "QUARANTINED") or rem_req == 0:
-            rpm_util = 100.0
-        elif rpm_limit and rpm_limit > 0:
-            used_req = (rpm_limit - rem_req) if rem_req is not None else rpm_curr
-            rpm_util = min(100.0, max(round((rpm_curr / rpm_limit) * 100.0, 1), round((used_req / rpm_limit) * 100.0, 1)))
-        else:
-            rpm_util = 0.0
-
-        if status in ("COOLDOWN", "QUOTA_EXHAUSTED", "QUARANTINED") or rem_tok == 0:
-            tpm_util = 100.0
-        elif tpm_limit and tpm_limit > 0:
-            used_tok = (tpm_limit - rem_tok) if rem_tok is not None else tpm_curr
-            tpm_util = min(100.0, max(round((tpm_curr / tpm_limit) * 100.0, 1), round((used_tok / tpm_limit) * 100.0, 1)))
-        else:
-            tpm_util = 0.0
-
         # Window reset time
-        if cooldown_remaining_s > 0.0 or reset_remaining_s > 0.0:
-            window_reset_in_s = max(cooldown_remaining_s, reset_remaining_s)
+        if cooldown_remaining_s > 0.0:
+            window_reset_in_s = cooldown_remaining_s
+        elif reset_at and reset_at > now:
+            window_reset_in_s = round(reset_at - now, 1)
         elif rpm_curr > 0 and oldest_60s:
             window_reset_in_s = max(0.0, round((oldest_60s + 60.0) - now, 1))
         else:
@@ -1385,7 +1326,7 @@ def get_per_api_key_telemetry(db_path: Optional[Union[str, Path]] = None) -> Dic
         })
 
     healthy_keys_total = sum(1 for k in key_list if k["status"] in ("HEALTHY", "IDLE"))
-    cooldown_keys_total = sum(1 for k in key_list if k["status"] in ("COOLDOWN", "QUOTA_EXHAUSTED"))
+    cooldown_keys_total = sum(1 for k in key_list if k["status"] == "COOLDOWN")
     quarantined_keys_total = sum(1 for k in key_list if k["status"] == "QUARANTINED")
 
     return {
@@ -1416,12 +1357,12 @@ def reset_key_cooldown_in_db(key_id: str = "all", db_path: Optional[Union[str, P
         with conn:
             if key_id == "all" or not key_id:
                 cur = conn.execute(
-                    "UPDATE api_key_status SET cooldown_until_epoch = 0.0, reset_at_epoch = 0.0, remaining_requests = NULL, status = 'HEALTHY' WHERE cooldown_until_epoch > 0.0 OR reset_at_epoch > 0.0 OR status != 'HEALTHY'"
+                    "UPDATE api_key_status SET cooldown_until_epoch = 0.0, status = 'HEALTHY' WHERE cooldown_until_epoch > 0.0"
                 )
                 count = cur.rowcount
             else:
                 cur = conn.execute(
-                    "UPDATE api_key_status SET cooldown_until_epoch = 0.0, reset_at_epoch = 0.0, remaining_requests = NULL, status = 'HEALTHY' WHERE key_id = ?",
+                    "UPDATE api_key_status SET cooldown_until_epoch = 0.0, status = 'HEALTHY' WHERE key_id = ?",
                     (key_id,),
                 )
                 count = cur.rowcount

@@ -535,21 +535,6 @@
     }
   }
 
-  function formatDuration(sec) {
-    if (!sec || sec <= 0) return "0s";
-    const d = Math.floor(sec / 86400);
-    const remD = sec % 86400;
-    const h = Math.floor(remD / 3600);
-    const remH = remD % 3600;
-    const m = Math.floor(remH / 60);
-    const s = Math.floor(remH % 60);
-
-    if (d > 0) return `${d}d ${h}h ${m}m`;
-    if (h > 0) return `${h}h ${m}m ${s < 10 ? "0" : ""}${s}s`;
-    if (m > 0) return `${m}m ${s < 10 ? "0" : ""}${s}s`;
-    return `${s}s`;
-  }
-
   function renderKeyCards() {
     if (!el.keyCardsContainer || !state.apiKeysData) return;
     const keys = state.apiKeysData.keys || [];
@@ -587,9 +572,6 @@
       } else if (statusLower === "cooldown") {
         statusPillClass = "status-pill-cooldown";
         statusLabel = "COOLDOWN";
-      } else if (statusLower === "quota_exhausted" || statusLower === "exhausted") {
-        statusPillClass = "status-pill-exhausted";
-        statusLabel = "QUOTA EXHAUSTED";
       } else if (statusLower === "quarantined") {
         statusPillClass = "status-pill-quarantined";
         statusLabel = "QUARANTINED";
@@ -615,7 +597,9 @@
       let timerActive = false;
       if (activeTimerSec > 0) {
         timerActive = true;
-        timerText = `Reset in ${formatDuration(activeTimerSec)}`;
+        const mins = Math.floor(activeTimerSec / 60);
+        const secs = Math.floor(activeTimerSec % 60);
+        timerText = `Reset in ${mins}:${secs < 10 ? "0" : ""}${secs}`;
       }
 
       return `
@@ -643,7 +627,7 @@
             </div>
             <div class="kcm-item">
               <span class="kcm-label">Success Rate</span>
-              <span class="kcm-value ${(k.success_rate ?? 100) >= 80 ? "text-emerald" : ((k.success_rate ?? 100) >= 50 ? "text-amber" : "text-rose")}">${(k.success_rate ?? 100).toFixed(1)}%</span>
+              <span class="kcm-value text-emerald">${(k.success_rate ?? 100).toFixed(1)}%</span>
             </div>
             <div class="kcm-item">
               <span class="kcm-label">Avg Latency</span>
@@ -717,7 +701,9 @@
           const span = tel.querySelector(".timer-text");
           if (span) {
             if (sec > 0) {
-              span.textContent = `Reset in ${formatDuration(sec)}`;
+              const mins = Math.floor(sec / 60);
+              const s = Math.floor(sec % 60);
+              span.textContent = `Reset in ${mins}:${s < 10 ? "0" : ""}${s}`;
             } else {
               tel.classList.remove("active-timer");
               span.textContent = "Ready / Idle";
