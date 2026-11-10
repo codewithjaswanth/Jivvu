@@ -28,9 +28,9 @@
           <div class="brand-meta">
             <div class="brand-title-wrap">
               <h1 class="brand-title">QuizZy <span class="brand-sub">Observability</span></h1>
-              <span class="brand-version-chip">v1.3</span>
+              <span class="brand-version-chip">v1.2</span>
             </div>
-            <span class="brand-tagline">Real-Time Gemini 3.8 Flash & Groq Dual-Engine Telemetry</span>
+            <span class="brand-tagline">Real-Time Backend Telemetry & Reliability Engine</span>
           </div>
         </div>
 
@@ -54,18 +54,14 @@
           </label>
           <div class="select-wrapper">
             <select id="model-select" class="styled-select model-dropdown">
-              <option value="auto" selected>Auto (Gemini 3.8 Flash + Groq Dual-Engine)</option>
+              <option value="auto" selected>Auto (Intelligent Cascade)</option>
               <optgroup label="Primary Profiles">
-                <option value="primary_a">Primary A (gemini-3.8-flash - Gemini)</option>
-                <option value="primary_b">Primary B (openai/gpt-oss-120b - Groq)</option>
+                <option value="primary_a">Primary A (openai/gpt-oss-120b)</option>
+                <option value="primary_b">Primary B (qwen/qwen3.8-27b)</option>
               </optgroup>
               <optgroup label="Provider Modes">
-                <option value="gemini_only">Gemini Only (gemini-3.8-flash)</option>
                 <option value="groq_only">Groq Only (All Groq Cascade)</option>
                 <option value="openrouter_only">OpenRouter Only (All OpenRouter Cascade)</option>
-              </optgroup>
-              <optgroup label="Specific Gemini Models">
-                <option value="gemini:gemini-3.8-flash">Gemini: gemini-3.8-flash</option>
               </optgroup>
               <optgroup label="Specific Groq Models">
                 <option value="groq:openai/gpt-oss-120b">Groq: openai/gpt-oss-120b</option>
@@ -74,11 +70,14 @@
               </optgroup>
               <optgroup label="Specific OpenRouter Models">
                 <option value="openrouter:nvidia/nemotron-3.5-super-vl:free">OpenRouter: nemotron-3.5-super-vl</option>
-                <option value="openrouter:nvidia/nemotron-3.5-lightning:free">OpenRouter: nemotron-3.5-lightning</option>
+                <option value="openrouter:nvidia/nemotron-3.5-lightning:free">OpenRouter: nemotron-3.5-lightning
+                </option>
                 <option value="openrouter:google/gemma-4-31b-it:free">OpenRouter: gemma-4-31b-it</option>
                 <option value="openrouter:liquid/lfm-2.5-2.6b:free">OpenRouter: lfm-2.5-2.6b</option>
-                <option value="openrouter:nvidia/nemotron-3-ultra-550b-a55b:free">OpenRouter: nemotron-3-ultra-550b</option>
-                <option value="openrouter:nvidia/nemotron-3-super-120b-a12b:free">OpenRouter: nemotron-3-super-120b</option>
+                <option value="openrouter:nvidia/nemotron-3-ultra-550b-a55b:free">OpenRouter: nemotron-3-ultra-550b
+                </option>
+                <option value="openrouter:nvidia/nemotron-3-super-120b-a12b:free">OpenRouter: nemotron-3-super-120b
+                </option>
                 <option value="openrouter:google/gemma-4-26b-a4b-it:free">OpenRouter: gemma-4-26b-a4b-it</option>
               </optgroup>
             </select>
@@ -303,98 +302,8 @@
             <div class="detail-row"><span>Port:</span> <strong>8000 (<span id="backend-ping-ms">-- ms</span>)</strong>
             </div>
             <div class="detail-row"><span>Model:</span> <strong id="backend-active-model-badge">Auto</strong></div>
-            <div class="detail-row"><span>Keys Pool:</span> <strong id="backend-keys-badge">Gemini (4) • Groq (7) • OR (5)</strong></div>
             <div class="detail-row"><span>Uptime:</span> <strong id="backend-uptime">--</strong></div>
           </div>
-        </div>
-      </section>
-
-      <!-- Dedicated Per-API-Key Telemetry & Live Quota Observability Suite -->
-      <section class="api-keys-section" id="api-keys-observability">
-        <div class="api-keys-header-row">
-          <div class="api-keys-title-group">
-            <div class="panel-icon-box panel-icon-emerald">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-              </svg>
-            </div>
-            <div>
-              <h2 class="panel-heading">API Key Quota & Telemetry Suite</h2>
-              <p class="panel-subtext">Live Sliding-Window RPM/TPM, Token Consumption & Rate-Limit Tracking (16 Configured Keys)</p>
-            </div>
-          </div>
-          <div class="api-keys-actions-group">
-            <button id="btn-reset-all-cooldowns" class="btn btn-secondary btn-sm" title="Clear all rate-limit cooldowns across all keys">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
-              </svg>
-              <span>Reset All Cooldowns</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Provider Summary Bar -->
-        <div class="provider-summary-bar" id="provider-summary-bar">
-          <div class="summary-metric-chip">
-            <span class="chip-label">Total Keys</span>
-            <span class="chip-value text-white" id="sum-total-keys">16</span>
-          </div>
-          <div class="summary-metric-chip">
-            <span class="chip-label">Healthy</span>
-            <span class="chip-value text-emerald" id="sum-healthy-keys">16</span>
-          </div>
-          <div class="summary-metric-chip">
-            <span class="chip-label">Cooldown</span>
-            <span class="chip-value text-amber" id="sum-cooldown-keys">0</span>
-          </div>
-          <div class="summary-metric-chip">
-            <span class="chip-label">Quarantined</span>
-            <span class="chip-value text-rose" id="sum-quarantined-keys">0</span>
-          </div>
-          <div class="summary-metric-chip divider-left">
-            <span class="chip-label">Global RPM (60s)</span>
-            <span class="chip-value text-cyan" id="sum-global-rpm">0</span>
-          </div>
-          <div class="summary-metric-chip">
-            <span class="chip-label">Global TPM (60s)</span>
-            <span class="chip-value text-cyan" id="sum-global-tpm">0</span>
-          </div>
-          <div class="summary-metric-chip">
-            <span class="chip-label">Total Tokens</span>
-            <span class="chip-value text-indigo" id="sum-total-tokens">0</span>
-          </div>
-          <div class="summary-metric-chip">
-            <span class="chip-label">Total 429s</span>
-            <span class="chip-value text-rose" id="sum-total-429s">0</span>
-          </div>
-        </div>
-
-        <!-- Provider Tabs -->
-        <div class="provider-tabs-bar">
-          <div class="provider-tabs" role="tablist">
-            <button class="prov-tab active" data-provider="all" id="tab-prov-all">All Keys (<span id="count-tab-all">16</span>)</button>
-            <button class="prov-tab" data-provider="gemini" id="tab-prov-gemini">
-              <span class="tab-dot dot-gemini"></span>
-              Gemini 3.8 Flash (<span id="count-tab-gemini">4</span>)
-            </button>
-            <button class="prov-tab" data-provider="groq" id="tab-prov-groq">
-              <span class="tab-dot dot-groq"></span>
-              Groq (<span id="count-tab-groq">7</span>)
-            </button>
-            <button class="prov-tab" data-provider="openrouter" id="tab-prov-openrouter">
-              <span class="tab-dot dot-openrouter"></span>
-              OpenRouter (<span id="count-tab-openrouter">5</span>)
-            </button>
-          </div>
-          <div class="search-wrap-mini">
-            <input type="text" id="api-key-search" class="styled-input-mini" placeholder="Filter by label or key...">
-          </div>
-        </div>
-
-        <!-- Key Cards Container Grid -->
-        <div class="key-cards-grid" id="key-cards-container">
-          <!-- Rendered dynamically via dashboard.js -->
         </div>
       </section>
 

@@ -24,7 +24,6 @@ _cached_active_model: Optional[str] = None
 # Known canonical aliases
 PRIMARY_A_ID = "primary_a"
 PRIMARY_B_ID = "primary_b"
-GEMINI_ONLY_ID = "gemini_only"
 GROQ_ONLY_ID = "groq_only"
 OPENROUTER_ONLY_ID = "openrouter_only"
 AUTO_ID = "auto"
@@ -33,7 +32,7 @@ AUTO_ID = "auto"
 def normalize_model_identifier(raw: Optional[str]) -> str:
     """
     Deterministically normalize any model string, alias, or display label.
-    Maps variants like 'Primary A', 'primary_a', 'Gemini-only', 'Groq-only', 'Auto' to canonical IDs.
+    Maps variants like 'Primary A', 'primary_a', 'Groq-only', 'Auto' to canonical IDs.
     Gracefully falls back to 'auto' for invalid or empty inputs without errors.
     """
     if raw is None:
@@ -45,43 +44,33 @@ def normalize_model_identifier(raw: Optional[str]) -> str:
     low = clean.lower().replace("-", "_").replace(" ", "_")
 
     # Automated
-    if low in ("auto", "default", "intelligent_cascade", "all", "dual_engine"):
+    if low in ("auto", "default", "intelligent_cascade", "all"):
         return AUTO_ID
 
     # Primary Profiles
-    if low in ("primary_a", "primarya", "pri_a", "gemini_3.8_flash", "gemini_3_8_flash", "gemini_3.8", "gemini_38") or "primary_a" in low:
+    if low in ("primary_a", "primarya", "pri_a", "gpt_oss_120b", "openai/gpt_oss_120b") or "primary_a" in low:
         return PRIMARY_A_ID
-    if low in ("primary_b", "primaryb", "pri_b", "gpt_oss_120b", "openai/gpt_oss_120b") or "primary_b" in low:
+    if low in ("primary_b", "primaryb", "pri_b", "qwen", "qwen3.8_27b", "qwen/qwen3.8_27b") or "primary_b" in low:
         return PRIMARY_B_ID
 
     # Provider Modes
-    if low in ("gemini_only", "gemini", "all_gemini", "gemini_cascade"):
-        return GEMINI_ONLY_ID
     if low in ("groq_only", "groq", "all_groq", "groq_cascade"):
         return GROQ_ONLY_ID
     if low in ("openrouter_only", "openrouter", "all_openrouter", "openrouter_cascade"):
         return OPENROUTER_ONLY_ID
 
     # Specific Model Formats:
-    # 1. gemini:model_name
-    if clean.startswith("gemini:"):
-        return f"gemini:{clean[7:].strip()}"
-    # 2. groq:model_name or groq/model_name
+    # 1. groq:model_name or groq/model_name
     if clean.startswith("groq:"):
         return f"groq:{clean[5:].strip()}"
-    # 3. openrouter:model_name
     if clean.startswith("openrouter:"):
         return f"openrouter:{clean[11:].strip()}"
 
-    # 4. Known models from Gemini
-    if "gemini" in clean.lower():
-        return f"gemini:{clean}"
-
-    # 5. Known models from Groq
+    # 2. Known models from Groq
     if any(k in clean.lower() for k in ("gpt-oss-120b", "qwen3.8", "gpt-oss-20b")):
         return f"groq:{clean}"
 
-    # 6. Known models from OpenRouter
+    # 3. Known models from OpenRouter
     if any(k in clean.lower() for k in ("nemotron", "gemma", "lfm", "free")):
         return f"openrouter:{clean}"
 
@@ -159,20 +148,16 @@ def reset_active_model_selection(db_path: Optional[Union[str, Path]] = None) -> 
 def get_model_display_label(model_id: str) -> str:
     """Return user-friendly descriptive label for a given canonical model identifier."""
     if model_id == AUTO_ID:
-        return "⚡ Auto (Gemini 3.8 Flash + Groq Dual-Engine)"
+        return "⚡ Auto (Intelligent Cascade)"
     if model_id == PRIMARY_A_ID:
-        return "Primary A (gemini-3.8-flash - Google Gemini)"
+        return "Primary A (openai/gpt-oss-120b - Groq)"
     if model_id == PRIMARY_B_ID:
-        return "Primary B (openai/gpt-oss-120b - Groq)"
-    if model_id == GEMINI_ONLY_ID:
-        return "Gemini Only (gemini-3.8-flash)"
+        return "Primary B (qwen/qwen3.8-27b - Groq)"
     if model_id == GROQ_ONLY_ID:
         return "Groq Only (All Groq Cascade)"
     if model_id == OPENROUTER_ONLY_ID:
         return "OpenRouter Only (All OpenRouter Cascade)"
 
-    if model_id.startswith("gemini:"):
-        return f"Gemini • {model_id[7:]}"
     if model_id.startswith("groq:"):
         return f"Groq • {model_id[5:]}"
     if model_id.startswith("openrouter:"):
@@ -186,10 +171,9 @@ def get_available_models_catalog(config: Optional[dict] = None) -> Dict[str, Any
     Generate grouped catalog of all available model options for UI select elements.
     Includes Auto, Primary Profiles, Provider Modes, and Specific Models from models.json.
     """
-    pri_a_model = "gemini-3.8-flash"
-    pri_b_model = "openai/gpt-oss-120b"
-    gemini_models = ["gemini-3.8-flash"]
-    groq_models = [pri_b_model, "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+    pri_a_model = "openai/gpt-oss-120b"
+    pri_b_model = "qwen/qwen3.8-27b"
+    groq_models = [pri_a_model, pri_b_model, "openai/gpt-oss-20b"]
     or_models = [
         "nvidia/nemotron-3.5-super-vl:free",
         "nvidia/nemotron-3.5-lightning:free",
@@ -206,15 +190,13 @@ def get_available_models_catalog(config: Optional[dict] = None) -> Dict[str, Any
         if "primary_b" in config and isinstance(config["primary_b"], dict):
             pri_b_model = config["primary_b"].get("model", pri_b_model)
 
-        # Extract Gemini, Groq, and OpenRouter models from cascade and fallback pools
+        # Extract Groq and OpenRouter models from cascade and fallback pools
         cascade = config.get("text_cascade") or []
         for item in cascade:
             prov = str(item.get("provider", "")).lower()
             m = item.get("model")
             if m:
-                if prov == "gemini" and m not in gemini_models:
-                    gemini_models.append(m)
-                elif prov == "groq" and m not in groq_models:
+                if prov == "groq" and m not in groq_models:
                     groq_models.append(m)
                 elif prov == "openrouter" and m not in or_models:
                     or_models.append(m)
@@ -224,9 +206,7 @@ def get_available_models_catalog(config: Optional[dict] = None) -> Dict[str, Any
                 m = pool_item.get("model")
                 prov = str(pool_item.get("provider", "")).lower()
                 if m:
-                    if prov == "gemini" and m not in gemini_models:
-                        gemini_models.append(m)
-                    elif prov == "groq" and m not in groq_models:
+                    if prov == "groq" and m not in groq_models:
                         groq_models.append(m)
                     elif prov == "openrouter" and m not in or_models:
                         or_models.append(m)
@@ -238,8 +218,8 @@ def get_available_models_catalog(config: Optional[dict] = None) -> Dict[str, Any
                 "options": [
                     {
                         "id": AUTO_ID,
-                        "label": "⚡ Auto (Gemini 3.8 Flash + Groq Dual-Engine)",
-                        "description": "Smart multimodal racing cascade handling all aptitude, diagram, code & text questions without errors",
+                        "label": "⚡ Auto (Intelligent Cascade)",
+                        "description": "Smart multi-tier fallback cascade handling all subjects without errors",
                     }
                 ],
             },
@@ -249,27 +229,22 @@ def get_available_models_catalog(config: Optional[dict] = None) -> Dict[str, Any
                     {
                         "id": PRIMARY_A_ID,
                         "label": f"Primary A ({pri_a_model})",
-                        "provider": "gemini",
+                        "provider": "groq",
                         "model": pri_a_model,
-                        "description": "S-Tier Google Gemini reasoning & multimodal vision engine",
+                        "description": "High-accuracy S-Tier Groq flagship solver",
                     },
                     {
                         "id": PRIMARY_B_ID,
                         "label": f"Primary B ({pri_b_model})",
                         "provider": "groq",
                         "model": pri_b_model,
-                        "description": "High-accuracy S-Tier Groq flagship solver",
+                        "description": "High-reasoning S-Tier Groq alternative solver",
                     },
                 ],
             },
             {
                 "label": "Provider Modes",
                 "options": [
-                    {
-                        "id": GEMINI_ONLY_ID,
-                        "label": "Gemini Only (gemini-3.8-flash)",
-                        "description": "Strictly restricts solving to Google Gemini 3.8 Flash pool",
-                    },
                     {
                         "id": GROQ_ONLY_ID,
                         "label": "Groq Only (All Groq Cascade)",
@@ -280,18 +255,6 @@ def get_available_models_catalog(config: Optional[dict] = None) -> Dict[str, Any
                         "label": "OpenRouter Only (All OpenRouter Cascade)",
                         "description": "Strictly restricts solving to OpenRouter multi-key pool",
                     },
-                ],
-            },
-            {
-                "label": "Specific Gemini Models",
-                "options": [
-                    {
-                        "id": f"gemini:{m}",
-                        "label": f"Gemini: {m}",
-                        "provider": "gemini",
-                        "model": m,
-                    }
-                    for m in gemini_models
                 ],
             },
             {
@@ -343,22 +306,20 @@ def build_custom_text_cascade(
 
     # 2. PRIMARY A: Prioritize Primary A model at position 0
     if norm == PRIMARY_A_ID:
-        pri_a_model = "gemini-3.8-flash"
-        pri_a_prov = "gemini"
-        if config and "primary_a" in config and isinstance(config["primary_a"], dict):
+        pri_a_model = "openai/gpt-oss-120b"
+        if config and "primary_a" in config:
             pri_a_model = config["primary_a"].get("model", pri_a_model)
-            pri_a_prov = config["primary_a"].get("provider", pri_a_prov)
 
         target = None
         others = []
         for item in base_cascade:
-            if item.get("provider", "").lower() == pri_a_prov.lower() and item.get("model") == pri_a_model:
+            if item.get("provider", "").lower() == "groq" and item.get("model") == pri_a_model:
                 target = dict(item)
             else:
                 others.append(dict(item))
 
         if not target:
-            target = {"provider": pri_a_prov, "model": pri_a_model, "tier": "S", "priority": 1}
+            target = {"provider": "groq", "model": pri_a_model, "tier": "S", "priority": 1}
 
         target["priority"] = 1
         for idx, it in enumerate(others, start=2):
@@ -367,40 +328,27 @@ def build_custom_text_cascade(
 
     # 3. PRIMARY B: Prioritize Primary B model at position 0
     if norm == PRIMARY_B_ID:
-        pri_b_model = "openai/gpt-oss-120b"
-        pri_b_prov = "groq"
-        if config and "primary_b" in config and isinstance(config["primary_b"], dict):
+        pri_b_model = "qwen/qwen3.8-27b"
+        if config and "primary_b" in config:
             pri_b_model = config["primary_b"].get("model", pri_b_model)
-            pri_b_prov = config["primary_b"].get("provider", pri_b_prov)
 
         target = None
         others = []
         for item in base_cascade:
-            if item.get("provider", "").lower() == pri_b_prov.lower() and item.get("model") == pri_b_model:
+            if item.get("provider", "").lower() == "groq" and item.get("model") == pri_b_model:
                 target = dict(item)
             else:
                 others.append(dict(item))
 
         if not target:
-            target = {"provider": pri_b_prov, "model": pri_b_model, "tier": "S", "priority": 1}
+            target = {"provider": "groq", "model": pri_b_model, "tier": "S", "priority": 1}
 
         target["priority"] = 1
         for idx, it in enumerate(others, start=2):
             it["priority"] = idx
         return [target] + others
 
-    # 4. GEMINI ONLY: Exclude any non-Gemini models completely
-    if norm == GEMINI_ONLY_ID:
-        gemini_items = [dict(it) for it in base_cascade if it.get("provider", "").lower() == "gemini"]
-        if not gemini_items:
-            gemini_items = [
-                {"provider": "gemini", "model": "gemini-3.8-flash", "priority": 1, "tier": "S", "multimodal": True}
-            ]
-        for idx, it in enumerate(gemini_items, start=1):
-            it["priority"] = idx
-        return gemini_items
-
-    # 5. GROQ ONLY: Exclude any non-Groq models completely
+    # 4. GROQ ONLY: Exclude any non-Groq models completely
     if norm == GROQ_ONLY_ID:
         groq_items = [dict(it) for it in base_cascade if it.get("provider", "").lower() == "groq"]
         if not groq_items:
@@ -414,7 +362,7 @@ def build_custom_text_cascade(
             it["priority"] = idx
         return groq_items
 
-    # 6. OPENROUTER ONLY: Exclude any non-OpenRouter models completely
+    # 5. OPENROUTER ONLY: Exclude any non-OpenRouter models completely
     if norm == OPENROUTER_ONLY_ID:
         or_items = [dict(it) for it in base_cascade if it.get("provider", "").lower() == "openrouter"]
         if config and config.get("fallback_pool"):
@@ -433,24 +381,21 @@ def build_custom_text_cascade(
             it["priority"] = idx
         return or_items
 
-    # 7. SPECIFIC MODEL (e.g. gemini:gemini-3.8-flash, groq:openai/gpt-oss-20b, openrouter:...)
+    # 6. SPECIFIC MODEL (e.g. groq:openai/gpt-oss-20b or openrouter:google/gemma-4-31b-it:free)
     target_provider = "groq"
     target_model = norm
-    if norm.startswith("gemini:"):
-        target_provider = "gemini"
-        target_model = norm[7:]
-    elif norm.startswith("groq:"):
+    if norm.startswith("groq:"):
         target_provider = "groq"
         target_model = norm[5:]
     elif norm.startswith("openrouter:"):
         target_provider = "openrouter"
         target_model = norm[11:]
-    elif "gemini" in norm:
-        target_provider = "gemini"
-    elif any(k in norm for k in ("gpt-oss", "qwen")):
-        target_provider = "groq"
-    else:
-        target_provider = "openrouter"
+    elif "/" in norm:
+        # Determine provider by model path or lookup in config
+        if any(k in norm for k in ("gpt-oss", "qwen")):
+            target_provider = "groq"
+        else:
+            target_provider = "openrouter"
 
     target_item = {"provider": target_provider, "model": target_model, "priority": 1}
 

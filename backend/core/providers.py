@@ -20,7 +20,6 @@ from backend.core.key_pool import (
     extract_model_meta,
     get_healthy_gemini_keys,
     get_healthy_groq_keys,
-    get_key_identity,
     get_model_cooldown_remaining,
     get_next_gemini_key,
     get_next_groq_key,
@@ -31,7 +30,6 @@ from backend.core.key_pool import (
     load_api_keys,
     load_gemini_api_keys,
     load_models_config,
-    parse_reset_duration_seconds,
     quarantine_key,
     quarantine_model,
     record_gemini_key_error,
@@ -50,7 +48,6 @@ from backend.core.normalizer import (
     normalize_answer,
 )
 from backend.core.parser import ParseError, ParsedLLMResponse, parse_llm_response
-from backend.telemetry_db import record_api_key_call_telemetry
 
 
 def _dispatch(name: str, fallback_fn: Any) -> Any:
@@ -163,124 +160,6 @@ def compute_gemini_thinking_budget(q_type: str = "mcq", question: str = "", has_
     return 128
 
 
-def record_key_invocation_telemetry(
-    provider: str,
-    api_key: str,
-    model: str,
-    status_code: int,
-    latency_ms: float,
-    response_data: Optional[dict] = None,
-    headers: Optional[Any] = None,
-    raw_prompt_text: str = "",
-    raw_completion_text: str = "",
-    cooldown_duration_s: Optional[float] = None,
-) -> None:
-    """Safely extract tokens, rate limit headers, and record per-key telemetry into SQLite."""
-    try:
-        ident = get_key_identity(provider, api_key)
-        prompt_tokens = 0
-        completion_tokens = 0
-        thinking_tokens = 0
-        total_tokens = 0
-
-        if response_data and isinstance(response_data, dict):
-            if provider == "gemini":
-                usage = response_data.get("usageMetadata", {})
-                prompt_tokens = int(usage.get("promptTokenCount", 0))
-                completion_tokens = int(usage.get("candidatesTokenCount", 0))
-                thinking_tokens = int(usage.get("thoughtsTokenCount", 0))
-                total_tokens = int(usage.get("totalTokenCount", prompt_tokens + completion_tokens + thinking_tokens))
-            else:
-                usage = response_data.get("usage", {})
-                prompt_tokens = int(usage.get("prompt_tokens", 0))
-                completion_tokens = int(usage.get("completion_tokens", 0))
-                thinking_tokens = 0
-                total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens))
-
-        if total_tokens == 0:
-            p_est = max(1, len(raw_prompt_text) // 4) if raw_prompt_text else 0
-            c_est = max(0, len(raw_completion_text) // 4) if raw_completion_text else 0
-            prompt_tokens = p_est
-            completion_tokens = c_est
-            total_tokens = p_est + c_est
-
-        limit_requests = None
-        remaining_requests = None
-        limit_tokens = None
-        remaining_tokens = None
-        reset_at_epoch = None
-
-        if headers:
-            h_get = lambda k: headers.get(k) or headers.get(k.lower()) if hasattr(headers, "get") else None
-            lim_r = h_get("x-ratelimit-limit-requests") or h_get("x-ratelimit-limit")
-            if lim_r is not None:
-                try:
-                    limit_requests = int(lim_r)
-                except (ValueError, TypeError):
-                    pass
-
-            rem_r = h_get("x-ratelimit-remaining-requests") or h_get("x-ratelimit-remaining")
-            if rem_r is not None:
-                try:
-                    remaining_requests = int(rem_r)
-                except (ValueError, TypeError):
-                    pass
-
-            lim_t = h_get("x-ratelimit-limit-tokens")
-            if lim_t is not None:
-                try:
-                    limit_tokens = int(lim_t)
-                except (ValueError, TypeError):
-                    pass
-
-            rem_t = h_get("x-ratelimit-remaining-tokens")
-            if rem_t is not None:
-                try:
-                    remaining_tokens = int(rem_t)
-                except (ValueError, TypeError):
-                    pass
-
-            reset_val = (
-                h_get("x-ratelimit-reset-requests")
-                or h_get("x-ratelimit-reset")
-                or h_get("retry-after")
-                or h_get("x-ratelimit-reset-tokens")
-            )
-            if reset_val:
-                reset_duration = parse_reset_duration_seconds(reset_val)
-                if reset_duration > 0.0:
-                    reset_at_epoch = time.time() + reset_duration
-
-        cooldown_until_epoch = None
-        if cooldown_duration_s and cooldown_duration_s > 0.0:
-            cooldown_until_epoch = time.time() + cooldown_duration_s
-
-        record_api_key_call_telemetry(
-            key_id=ident["key_id"],
-            provider=ident["provider"],
-            masked_key=ident["masked_key"],
-            key_label=ident["key_label"],
-            model_id=model,
-            status_code=status_code,
-            is_success=(status_code == 200),
-            is_429=(status_code == 429),
-            is_503=(status_code == 503),
-            latency_ms=latency_ms,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            thinking_tokens=thinking_tokens,
-            total_tokens=total_tokens,
-            limit_requests=limit_requests,
-            remaining_requests=remaining_requests,
-            limit_tokens=limit_tokens,
-            remaining_tokens=remaining_tokens,
-            reset_at_epoch=reset_at_epoch,
-            cooldown_until_epoch=cooldown_until_epoch,
-        )
-    except Exception:
-        pass
-
-
 async def call_single_completion(
     client: httpx.AsyncClient,
     provider: str,
@@ -298,7 +177,6 @@ async def call_single_completion(
     if not api_key or not str(api_key).strip():
         return None, 0.0, "MISSING_API_KEY"
 
-    prompt_str = "\n".join(str(m.get("content", "")) for m in messages)
     timeout_sec = min(6.5, max(0.1, timeout_ms / 1000.0))
     t0 = time.perf_counter()
 
@@ -481,48 +359,14 @@ async def call_single_completion(
                         if isinstance(p, dict) and not p.get("thought", False) and p.get("text")
                     ]
                     if non_thought:
-                        res_str = str("\n".join(non_thought)).strip()
-                        record_key_invocation_telemetry(
-                            provider=provider,
-                            api_key=api_key,
-                            model=effective_model,
-                            status_code=200,
-                            latency_ms=elapsed_ms,
-                            response_data=data,
-                            headers=getattr(response, "headers", {}),
-                            raw_prompt_text=prompt_str,
-                            raw_completion_text=res_str,
-                        )
-                        return res_str, elapsed_ms, None
+                        return str("\n".join(non_thought)).strip(), elapsed_ms, None
                     # Fallback to thought parts if no non-thought text part exists
                     all_text_parts = [
                         p.get("text", "") for p in parts
                         if isinstance(p, dict) and p.get("text")
                     ]
                     if all_text_parts:
-                        res_str = str("\n".join(all_text_parts)).strip()
-                        record_key_invocation_telemetry(
-                            provider=provider,
-                            api_key=api_key,
-                            model=effective_model,
-                            status_code=200,
-                            latency_ms=elapsed_ms,
-                            response_data=data,
-                            headers=getattr(response, "headers", {}),
-                            raw_prompt_text=prompt_str,
-                            raw_completion_text=res_str,
-                        )
-                        return res_str, elapsed_ms, None
-                    record_key_invocation_telemetry(
-                        provider=provider,
-                        api_key=api_key,
-                        model=effective_model,
-                        status_code=200,
-                        latency_ms=elapsed_ms,
-                        response_data=data,
-                        headers=getattr(response, "headers", {}),
-                        raw_prompt_text=prompt_str,
-                    )
+                        return str("\n".join(all_text_parts)).strip(), elapsed_ms, None
                     return None, elapsed_ms, "EMPTY_CANDIDATE_PARTS"
 
             choices = data.get("choices", [])
@@ -532,43 +376,12 @@ async def call_single_completion(
                 if not str(content).strip():
                     content = msg.get("reasoning") or msg.get("reasoning_content") or ""
                 if str(content).strip():
-                    record_key_invocation_telemetry(
-                        provider=provider,
-                        api_key=api_key,
-                        model=effective_model,
-                        status_code=200,
-                        latency_ms=elapsed_ms,
-                        response_data=data,
-                        headers=getattr(response, "headers", {}),
-                        raw_prompt_text=prompt_str,
-                        raw_completion_text=str(content),
-                    )
                     return str(content), elapsed_ms, None
                 if provider == "openrouter":
                     _q_mod(model, 60.0)
-                record_key_invocation_telemetry(
-                    provider=provider,
-                    api_key=api_key,
-                    model=effective_model,
-                    status_code=200,
-                    latency_ms=elapsed_ms,
-                    response_data=data,
-                    headers=getattr(response, "headers", {}),
-                    raw_prompt_text=prompt_str,
-                )
                 return None, elapsed_ms, "EMPTY_CHOICES_CONTENT"
             if provider == "openrouter":
                 _q_mod(model, 60.0)
-            record_key_invocation_telemetry(
-                provider=provider,
-                api_key=api_key,
-                model=effective_model,
-                status_code=200,
-                latency_ms=elapsed_ms,
-                response_data=data,
-                headers=getattr(response, "headers", {}),
-                raw_prompt_text=prompt_str,
-            )
             return None, elapsed_ms, "EMPTY_CHOICES"
         elif provider == "gemini" and response.status_code == 400 and "thinkingConfig" in payload.get("generationConfig", {}):
             # Upstream rejected thinkingConfig -> retry once immediately without thinkingConfig
@@ -599,16 +412,6 @@ async def call_single_completion(
             if provider == "gemini":
                 _rec_gemini_err = _dispatch("record_gemini_key_error", record_gemini_key_error)
                 _rec_gemini_err(api_key, 503)
-            record_key_invocation_telemetry(
-                provider=provider,
-                api_key=api_key,
-                model=effective_model,
-                status_code=503,
-                latency_ms=elapsed_ms,
-                headers=getattr(response, "headers", {}),
-                raw_prompt_text=prompt_str,
-                cooldown_duration_s=1.5 if provider == "gemini" else 5.0,
-            )
             return None, elapsed_ms, f"HTTP_503: {response.text[:150]}"
         elif response.status_code == 429:
             retry_after_hdr = response.headers.get("retry-after")
@@ -671,34 +474,12 @@ async def call_single_completion(
                 _rec_gemini_err = _dispatch("record_gemini_key_error", record_gemini_key_error)
                 _rec_gemini_err(api_key, 429, retry_after_sec)
                 _set_m_cd("gemini", model, min(retry_after_sec, 8.0))
-            record_key_invocation_telemetry(
-                provider=provider,
-                api_key=api_key,
-                model=effective_model,
-                status_code=429,
-                latency_ms=elapsed_ms,
-                headers=getattr(response, "headers", {}),
-                raw_prompt_text=prompt_str,
-                cooldown_duration_s=min(retry_after_sec, 8.0) if provider == "gemini" else (
-                    min(retry_after_sec, 600.0) if provider == "groq" else max(12.0, retry_after_sec)
-                ),
-            )
             return None, elapsed_ms, "RATE_LIMIT_429"
         elif response.status_code in (401, 402, 403):
             if provider == "gemini":
                 _rec_gemini_err = _dispatch("record_gemini_key_error", record_gemini_key_error)
                 _rec_gemini_err(api_key, response.status_code)
             _q_key(api_key, response.status_code)
-            record_key_invocation_telemetry(
-                provider=provider,
-                api_key=api_key,
-                model=effective_model,
-                status_code=response.status_code,
-                latency_ms=elapsed_ms,
-                headers=getattr(response, "headers", {}),
-                raw_prompt_text=prompt_str,
-                cooldown_duration_s=3600.0,
-            )
             return None, elapsed_ms, f"HTTP_{response.status_code}: {response.text[:150]}"
         elif provider == "groq" and response.status_code in (400, 404, 429):
             if response.status_code == 404:
@@ -782,42 +563,17 @@ async def call_single_completion(
                             pass
             return None, elapsed_ms, f"HTTP_{response.status_code}: {response.text[:150]}"
         else:
-            record_key_invocation_telemetry(
-                provider=provider,
-                api_key=api_key,
-                model=effective_model,
-                status_code=response.status_code,
-                latency_ms=elapsed_ms,
-                headers=getattr(response, "headers", {}),
-                raw_prompt_text=prompt_str,
-            )
             return None, elapsed_ms, f"HTTP_{response.status_code}: {response.text[:150]}"
 
     except (httpx.TimeoutException, asyncio.TimeoutError):
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if provider == "openrouter":
             _q_mod(model, 60.0)
-        record_key_invocation_telemetry(
-            provider=provider,
-            api_key=api_key,
-            model=effective_model,
-            status_code=0,
-            latency_ms=elapsed_ms,
-            raw_prompt_text=prompt_str,
-        )
         return None, elapsed_ms, "TIMEOUT"
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if provider == "openrouter":
             _q_mod(model, 60.0)
-        record_key_invocation_telemetry(
-            provider=provider,
-            api_key=api_key,
-            model=effective_model,
-            status_code=0,
-            latency_ms=elapsed_ms,
-            raw_prompt_text=prompt_str,
-        )
         return None, elapsed_ms, f"NETWORK_ERROR_{type(exc).__name__}: {str(exc)}"
 
 

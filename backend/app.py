@@ -50,16 +50,12 @@ from backend.cache import (
     record_wrong_answer,
 )
 from backend.telemetry_db import (
-    get_per_api_key_telemetry,
     record_request_log,
-    reset_key_cooldown_in_db,
     validate_accuracy_and_classify_error,
 )
 from backend.core.key_pool import (
     get_healthy_groq_keys,
-    load_gemini_api_keys,
     load_groq_api_keys,
-    reset_gemini_key_cooldown,
     reset_key_quarantine,
     reset_model_cooldown,
     reset_model_quarantine,
@@ -341,8 +337,6 @@ async def health_check() -> HealthResponse:
     stats = get_cache_stats()
     models_summary = getattr(app.state, "models_config", {})
     _, searxng_enabled = get_searxng_config()
-    gemini_keys = load_gemini_api_keys()
-    groq_keys = load_groq_api_keys()
     openrouter_keys = load_openrouter_api_keys()
     active_pool = get_active_fallback_pool(models_summary)
     active_model = get_active_model_selection()
@@ -354,8 +348,6 @@ async def health_check() -> HealthResponse:
         cache_entries=stats.get("cache_entries", 0),
         searxng_enabled=searxng_enabled,
         searxng_circuit_open=is_searxng_circuit_open(),
-        gemini_keys_loaded=len(gemini_keys),
-        groq_keys_loaded=len(groq_keys),
         openrouter_keys_loaded=len(openrouter_keys),
         active_fallback_pool=active_pool,
         active_model_selection=active_model,
@@ -544,20 +536,11 @@ async def reset_backend_state() -> Dict[str, Any]:
                     pass
         _in_flight_locks.clear()
     _recent_solved_coalesce.clear()
-    reset_gemini_key_cooldown()
     reset_key_quarantine()
     reset_model_quarantine()
     reset_provider_cooldown()
     reset_model_cooldown()
-    reset_key_cooldown_in_db()
     return {"ok": True, "status": "ok", "state_reset": True, "message": "Backend state reset successfully"}
-
-
-@app.get("/api/key-pool-status")
-async def get_key_pool_status_endpoint() -> Dict[str, Any]:
-    """Retrieve comprehensive per-API-key metrics, token consumption, and live quotas from telemetry db."""
-    data = get_per_api_key_telemetry()
-    return {"status": "ok", **data}
 
 
 def remap_response_to_follower_options(res: SolveResponse, follower_options: List[str]) -> SolveResponse:
