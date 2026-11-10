@@ -495,7 +495,7 @@ def test_4_backend_solve_code_and_caching():
 
     assert data2["cache_hit"] is True
     assert data2["answer"] == data["answer"]
-    assert data2["latency_ms"] < 250.0
+    assert data2["latency_ms"] < 60.0
     print("  -> Passed SQLite cache hit for q_type='code'")
 
     # 3. Differing language -> Cache Miss

@@ -43,20 +43,8 @@ class TestResetStateEndpoint(unittest.TestCase):
         reset_key_model_quarantine()
 
     def tearDown(self):
-        from backend.core.key_pool import (
-            reset_gemini_key_cooldown,
-            reset_key_model_quarantine,
-            reset_key_quarantine,
-            reset_model_cooldown,
-            reset_model_quarantine,
-            reset_provider_cooldown,
-        )
         reset_key_quarantine()
         reset_key_model_quarantine()
-        reset_model_cooldown()
-        reset_model_quarantine()
-        reset_provider_cooldown()
-        reset_gemini_key_cooldown()
 
     def test_reset_state_api(self):
         client = TestClient(app)
@@ -105,8 +93,7 @@ class TestMultiAnswerSetInvariance(unittest.IsolatedAsyncioTestCase):
     async def test_solve_question_multi_answer_consensus(self):
         options = ["Alpha", "Beta", "Gamma", "Delta"]
 
-        with patch("backend.core.llm_client.load_gemini_api_keys", return_value=[]), \
-             patch("backend.core.llm_client.call_groq_primary") as mock_groq_pri:
+        with patch("backend.core.llm_client.call_groq_primary") as mock_groq_pri:
             mock_groq_pri.side_effect = [
                 (ModelResponse(answer="A, C", reason="A and C are correct."), 120.0, None),
                 (ModelResponse(answer="C, A", reason="Gamma and Alpha are true."), 140.0, None),
@@ -168,8 +155,7 @@ class TestProactiveGroqRateLimitBalancer(unittest.IsolatedAsyncioTestCase):
     async def test_single_primary_survival_fast_path_on_429(self):
         options = ["Paris", "London", "Berlin", "Rome"]
 
-        with patch("backend.core.llm_client.load_gemini_api_keys", return_value=[]), \
-             patch("backend.core.llm_client.call_groq_primary") as mock_groq_pri, \
+        with patch("backend.core.llm_client.call_groq_primary") as mock_groq_pri, \
              patch("backend.core.llm_client.run_groq_arbiter_fallback") as mock_arb, \
              patch("backend.core.llm_client.run_hedged_openrouter_fallback") as mock_or:
 

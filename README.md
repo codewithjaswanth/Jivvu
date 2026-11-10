@@ -18,7 +18,7 @@
 2. **Order-Invariant SHA-256 SQLite Cache & Dynamic Remapping:**  
    Quiz questions are hashed by normalizing the canonical question stem and canonicalized option set. When shuffled options are encountered on different sessions or users, the backend dynamically remaps solution indices and keys to match the follower's visual permutation in `< 2ms`.
 3. **Multi-Model Consensus & Proactive Zero-429 Balancer:**  
-   Races Gemini 3.8 Flash (`models/gemini-3.8-flash`) as the primary S-tier flagship across 4 verified Google AI Studio keys (1,000–2,000 RPM, 4M TPM) alongside Groq model buckets (`openai/gpt-oss-120b`, `llama-3.3-70b-versatile`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) and OpenRouter fallbacks (`nemotron-3.5-super-vl`, `gemma-4-31b-it`). Features concurrent dual-Gemini vision racing, adaptive thinking budgets (128/1024/2048), instant key rotation on 503 (< 5ms), and proactive token header tracking.
+   Races independent Groq model buckets (`openai/gpt-oss-120b`, `llama-3.3-70b-versatile`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) with automatic failover to Gemini (`gemini-2.5-flash`) and OpenRouter (`nemotron-3.5-super-vl`, `gemma-4-31b-it`). Tracks per-key sliding window token headers (`x-ratelimit-remaining-tokens`) to proactively rotate keys *before* hitting rate limits.
 4. **Windowless Native Messaging Lifecycle:**  
    Spawns and manages the FastAPI backend using Windows `pythonw.exe` and a compiled C# binary (`native_host_win.exe`) with `CREATE_NO_WINDOW`. Zero terminal flicker, zero taskbar bloat, and automatic termination when test tabs close.
 5. **Decoupled Telemetry & Observability Dashboard (`:8765`):**  
@@ -169,15 +169,14 @@ cd Jivvu
 Open `backend\.env` in Notepad and add your free keys:
 
 ```env
-# Primary S-Tier Multimodal Reasoning Engine (Free / PAYG Tier at aistudio.google.com)
-GEMINI_API_KEY=your_primary_gemini_key_here
-GEMINI_API_KEYS=key1,key2,key3,key4
+# Primary Fast Inference (Recommended: Free tier at console.groq.com)
+GROQ_API_KEY=gsk_your_groq_api_key_here
 
-# High-Speed Cross-Provider Companion (console.groq.com)
-GROQ_API_KEYS=key1,key2,key3,key4,key5,key6
-
-# Hedged Secondary Fallback (openrouter.ai)
+# Hedged Secondary Fallback (Free tier at openrouter.ai)
 OPENROUTER_API_KEYS=sk-or-v1-your_openrouter_api_key_here
+
+# Vision & Multimodal Diagram Solver (Free tier at aistudio.google.com)
+GEMINI_API_KEY=AIzaSy_your_gemini_api_key_here
 ```
 
 ### Loading the Chrome Extension

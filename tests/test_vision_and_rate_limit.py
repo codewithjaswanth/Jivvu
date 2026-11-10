@@ -370,13 +370,10 @@ def test_8_groq_vision_tier_1_priority_over_openrouter():
         parsed = ParsedLLMResponse(answer="C", reason="Longest path in binary tree has 5 edges.")
         return "", parsed, norm, 120.0, None
 
-    with (
-        patch("backend.core.llm_client.load_gemini_api_keys", return_value=[]),
-        patch("backend.core.llm_client.load_groq_api_keys", return_value=["test_groq_key"]),
-        patch("backend.core.llm_client.load_openrouter_api_keys", return_value=["test_or_key"]),
-        patch("backend.core.llm_client.call_model_with_budget_retry", side_effect=mock_vision_call),
-    ):
-        sol = asyncio.run(
+    with patch("backend.core.llm_client.load_groq_api_keys", return_value=["test_groq_key"]):
+        with patch("backend.core.llm_client.load_openrouter_api_keys", return_value=["test_or_key"]):
+            with patch("backend.core.llm_client.call_model_with_budget_retry", side_effect=mock_vision_call):
+                sol = asyncio.run(
                     solve_question(
                         subject="Computer Science",
                         q_type="mcq",
@@ -391,8 +388,8 @@ def test_8_groq_vision_tier_1_priority_over_openrouter():
     assert len(providers_called) == 1
     # Crucial: First and only provider called was Groq Vision!
     assert providers_called[0][0] == "groq"
-    assert providers_called[0][1] in ("meta-llama/llama-4-scout-17b-16e-instruct", "qwen/qwen3.8-27b")
-    assert sol.models_called[0].startswith("vision:groq/")
+    assert providers_called[0][1] == "meta-llama/llama-4-scout-17b-16e-instruct"
+    assert sol.models_called == ["vision:groq/meta-llama/llama-4-scout-17b-16e-instruct"]
 
 
 # ==============================================================================
@@ -436,13 +433,10 @@ def test_10_groq_per_model_cooldown_rotates_without_key_quarantine():
         parsed = ParsedLLMResponse(answer="A", reason="Calculated correctly.")
         return "", parsed, norm, 80.0, None
 
-    with (
-        patch("backend.core.llm_client.load_gemini_api_keys", return_value=[]),
-        patch("backend.core.llm_client.load_groq_api_keys", return_value=["gsk_testkey_123"]),
-        patch("backend.core.llm_client.load_openrouter_api_keys", return_value=["or_testkey_456"]),
-        patch("backend.core.llm_client.call_model_with_budget_retry", side_effect=mock_call),
-    ):
-        sol = asyncio.run(
+    with patch("backend.core.llm_client.load_groq_api_keys", return_value=["gsk_testkey_123"]):
+        with patch("backend.core.llm_client.load_openrouter_api_keys", return_value=["or_testkey_456"]):
+            with patch("backend.core.llm_client.call_model_with_budget_retry", side_effect=mock_call):
+                sol = asyncio.run(
                     solve_question(
                         subject="Computer Science",
                         q_type="mcq",
@@ -621,32 +615,29 @@ def test_14_url_encoded_image_extraction_and_unquoting():
     assert called_url == "https://d15dfoxfhy94.cloudfront.net/binary_tree_q13.png"
 
     # 2. End-to-end solve_question extracts from [Image: ...] stem and routes to Groq vision
-    with (
-        patch("backend.core.llm_client.load_gemini_api_keys", return_value=[]),
-        patch("backend.core.llm_client.load_groq_api_keys", return_value=["gsk_mock_vision_key"]),
-        patch("backend.core.llm_client.call_model_with_budget_retry") as mock_call,
-    ):
-        mock_norm = NormalizedAnswer(
-            canonical_key="C",
-            selected_index=2,
-            selected_text="5",
-            raw_answer="C",
-        )
-        mock_parsed = ParsedLLMResponse(answer="C", reason="The tree diameter has 5 edges.")
-        mock_call.return_value = ("{'answer': 'C'}", mock_parsed, mock_norm, 120.0, None)
+    with patch("backend.core.llm_client.load_groq_api_keys", return_value=["gsk_mock_vision_key"]):
+        with patch("backend.core.llm_client.call_model_with_budget_retry") as mock_call:
+            mock_norm = NormalizedAnswer(
+                canonical_key="C",
+                selected_index=2,
+                selected_text="5",
+                raw_answer="C",
+            )
+            mock_parsed = ParsedLLMResponse(answer="C", reason="The tree diameter has 5 edges.")
+            mock_call.return_value = ("{'answer': 'C'}", mock_parsed, mock_norm, 120.0, None)
 
-        res = asyncio.run(solve_question(
-            subject="Computer Science",
-            q_type="mcq",
-            question=stem,
-            options=opts,
-            client=mock_client,
-        ))
+            res = asyncio.run(solve_question(
+                subject="Computer Science",
+                q_type="mcq",
+                question=stem,
+                options=opts,
+                client=mock_client,
+            ))
 
-        assert res.status == "OK"
-        assert res.canonical_key == "C"
-        assert res.selected_text == "5"
-        assert "vision:groq" in res.models_called[0]
+            assert res.status == "OK"
+            assert res.canonical_key == "C"
+            assert res.selected_text == "5"
+            assert "vision:groq" in res.models_called[0]
 
 
 # ==============================================================================

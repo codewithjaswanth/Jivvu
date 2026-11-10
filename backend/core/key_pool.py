@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -26,9 +25,6 @@ _model_cooldown_until: Dict[Tuple[str, str], float] = {}
 _openrouter_key_rr_idx: int = 0
 _groq_key_rr_idx: int = 0
 _gemini_key_rr_idx: int = 0
-_gemini_key_cooldown_until: Dict[str, float] = {}
-_gemini_key_inflight: Dict[str, int] = {}
-_gemini_key_stats: Dict[str, Dict[str, Any]] = {}
 
 GROQ_PRIORITY_BUCKETS: List[Dict[str, Any]] = [
     {"provider": "groq", "model": "openai/gpt-oss-120b", "family": "gpt-oss", "tier": "S", "priority": 1},
@@ -158,7 +154,6 @@ def reset_key_quarantine() -> None:
     _model_cooldown_until.clear()
     reset_provider_cooldown()
     reset_key_model_quarantine()
-    reset_gemini_key_cooldown()
 
 
 def _key_hash(key: str) -> str:
@@ -361,15 +356,6 @@ def reset_model_quarantine() -> None:
     _model_quarantine_until.clear()
 
 
-def _sanitize_key_str(raw: str) -> str:
-    """Strip whitespace, quotes, and accidental list prefixes like '1. ', '2: ' from API keys."""
-    if not raw:
-        return ""
-    cleaned = raw.strip().strip("'\"")
-    cleaned = re.sub(r"^\d+[\.\:\-]\s*", "", cleaned)
-    return cleaned.strip()
-
-
 def load_groq_api_keys() -> List[str]:
     """Load all unique non-empty Groq keys from GROQ_API_KEYS, GROQ_API_KEY, and numbered vars."""
     if "GROQ_API_KEYS" not in os.environ and "GROQ_API_KEY" not in os.environ:
@@ -382,19 +368,19 @@ def load_groq_api_keys() -> List[str]:
     keys: List[str] = []
     multi_raw = os.getenv("GROQ_API_KEYS", "")
     for k in multi_raw.split(","):
-        k_clean = _sanitize_key_str(k)
+        k_clean = k.strip()
         if k_clean and k_clean not in keys:
             keys.append(k_clean)
 
     single_raw = os.getenv("GROQ_API_KEY", "")
     for k in single_raw.split(","):
-        k_clean = _sanitize_key_str(k)
+        k_clean = k.strip()
         if k_clean and k_clean not in keys:
             keys.append(k_clean)
 
     for env_k, env_v in os.environ.items():
         if env_k.startswith("GROQ_API_KEY_"):
-            v_clean = _sanitize_key_str(env_v)
+            v_clean = env_v.strip()
             if v_clean and v_clean not in keys:
                 keys.append(v_clean)
 
@@ -464,73 +450,6 @@ def load_openrouter_api_keys() -> List[str]:
     return keys
 
 
-def set_gemini_key_cooldown(key: str, duration_sec: float = 8.0, reason: str = "") -> None:
-    """Set cooldown for a specific Gemini API key."""
-    if not key:
-        return
-    _gemini_key_cooldown_until[key] = time.time() + duration_sec
-
-
-def record_gemini_key_error(key: str, status_code: int, retry_after: Optional[float] = None) -> float:
-    """
-    Record error on a Gemini API key and apply granular cooldowns:
-    - HTTP 429: Rate limit cooldown of 8.0s (or Retry-After header).
-    - HTTP 503: Transient model load spike micro-cooldown of 1.5s.
-    - HTTP 401, 402, 403: Quarantine key for 300.0s.
-    - Other 5xx: 2.0s cooldown.
-    Returns the cooldown duration in seconds.
-    """
-    if not key:
-        return 0.0
-    if status_code == 429:
-        duration = float(retry_after) if (retry_after is not None and retry_after > 0) else 8.0
-        set_gemini_key_cooldown(key, duration, reason="429_rate_limit")
-    elif status_code == 503:
-        duration = 1.5
-        set_gemini_key_cooldown(key, duration, reason="503_transient_overload")
-    elif status_code in (401, 402, 403):
-        duration = 300.0
-        quarantine_key(key, status_code)
-        set_gemini_key_cooldown(key, duration, reason=f"auth_error_{status_code}")
-    else:
-        duration = 2.0
-        set_gemini_key_cooldown(key, duration, reason=f"http_{status_code}")
-    return duration
-
-
-def is_gemini_key_available(key: str) -> bool:
-    """Check if a Gemini key is healthy, unquarantined, and not in cooldown."""
-    if not key:
-        return False
-    if is_key_quarantined(key):
-        return False
-    until = _gemini_key_cooldown_until.get(key, 0.0)
-    return time.time() >= until
-
-
-def increment_gemini_inflight(key: str) -> None:
-    if key:
-        _gemini_key_inflight[key] = _gemini_key_inflight.get(key, 0) + 1
-
-
-def decrement_gemini_inflight(key: str) -> None:
-    if key:
-        curr = _gemini_key_inflight.get(key, 0)
-        _gemini_key_inflight[key] = max(0, curr - 1)
-
-
-def get_gemini_inflight(key: str) -> int:
-    return _gemini_key_inflight.get(key, 0)
-
-
-def reset_gemini_key_cooldown() -> None:
-    global _gemini_key_cooldown_until, _gemini_key_inflight, _gemini_key_stats, _gemini_key_rr_idx
-    _gemini_key_cooldown_until.clear()
-    _gemini_key_inflight.clear()
-    _gemini_key_stats.clear()
-    _gemini_key_rr_idx = 0
-
-
 def load_gemini_api_keys() -> List[str]:
     """Load all unique non-empty Gemini keys from GEMINI_API_KEYS, GEMINI_API_KEY, and numbered vars."""
     if "GEMINI_API_KEYS" not in os.environ and "GEMINI_API_KEY" not in os.environ:
@@ -541,71 +460,43 @@ def load_gemini_api_keys() -> List[str]:
             load_dotenv()
 
     keys: List[str] = []
-    # Primary key first
-    single_raw = os.getenv("GEMINI_API_KEY", "")
-    for k in single_raw.split(","):
-        k_clean = _sanitize_key_str(k)
-        if k_clean and k_clean not in keys:
-            keys.append(k_clean)
-
-    # Comma-separated pool
     multi_raw = os.getenv("GEMINI_API_KEYS", "")
     for k in multi_raw.split(","):
-        k_clean = _sanitize_key_str(k)
+        k_clean = k.strip()
         if k_clean and k_clean not in keys:
             keys.append(k_clean)
 
-    # Numbered env vars GEMINI_API_KEY_1..N sorted
-    numbered_keys: List[Tuple[int, str]] = []
+    single_raw = os.getenv("GEMINI_API_KEY", "")
+    for k in single_raw.split(","):
+        k_clean = k.strip()
+        if k_clean and k_clean not in keys:
+            keys.append(k_clean)
+
     for env_k, env_v in os.environ.items():
         if env_k.startswith("GEMINI_API_KEY_"):
-            suffix = env_k[len("GEMINI_API_KEY_"):]
-            try:
-                num = int(suffix)
-            except ValueError:
-                num = 999
-            v_clean = _sanitize_key_str(env_v)
-            if v_clean:
-                numbered_keys.append((num, v_clean))
-    numbered_keys.sort(key=lambda x: x[0])
-    for _, k_val in numbered_keys:
-        if k_val not in keys:
-            keys.append(k_val)
+            v_clean = env_v.strip()
+            if v_clean and v_clean not in keys:
+                keys.append(v_clean)
 
     return keys
 
 
-# Primary alias per specification
-get_gemini_keys = load_gemini_api_keys
-
-
 def get_healthy_gemini_keys() -> List[str]:
-    """Retrieve all non-quarantined and non-cooldown Gemini API keys."""
+    """Retrieve all non-quarantined Gemini API keys."""
     all_keys = load_gemini_api_keys()
     if not all_keys:
         return []
-    healthy = [k for k in all_keys if is_gemini_key_available(k)]
+    healthy = [k for k in all_keys if not is_key_quarantined(k)]
     return healthy if healthy else all_keys
 
 
-def get_next_gemini_key(exclude: Optional[str] = None, prioritize_least_inflight: bool = False) -> str:
-    """
-    Return next round-robin healthy Gemini API key, excluding a quarantined/cooldown/exhausted key if requested.
-    If prioritize_least_inflight is True, chooses the available key with the lowest in-flight request count.
-    """
+def get_next_gemini_key(exclude: Optional[str] = None) -> str:
+    """Return next round-robin healthy Gemini API key, excluding a quarantined/exhausted key if requested."""
     global _gemini_key_rr_idx
     healthy = get_healthy_gemini_keys()
     if not healthy:
         return ""
     candidates = [k for k in healthy if k != exclude] if (exclude and len(healthy) > 1) else healthy
-    if not candidates:
-        all_keys = load_gemini_api_keys()
-        candidates = [k for k in all_keys if k != exclude] if (exclude and len(all_keys) > 1) else all_keys
-
-    if prioritize_least_inflight and len(candidates) > 1:
-        candidates = sorted(candidates, key=lambda k: get_gemini_inflight(k))
-        return candidates[0]
-
     idx = _gemini_key_rr_idx % len(candidates)
     _gemini_key_rr_idx += 1
     return candidates[idx]

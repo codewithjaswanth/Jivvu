@@ -3,7 +3,7 @@
 > **System Designation:** QuizZy Core Inference Engine / Jivvu Desktop Application & Observability Suite  
 > **Target Platform:** Google Chrome / Microsoft Edge (Manifest V3) + FastAPI Local Engine (Windows 10/11 x64)  
 > **Primary Repository:** `https://github.com/codewithjaswanth/Jivvu.git` (`main` branch)  
-> **Verification Status:** 100% Test Pass Rate (311/311 Pytest Tests Passing, 15/15 Coding Benchmarks, 4/4 Real Demo Scenarios)
+> **Verification Status:** 100% Test Pass Rate (304/304 Pytest Tests Passing, 15/15 Coding Benchmarks, 4/4 Real Demo Scenarios)
 
 ---
 
@@ -464,24 +464,19 @@ Implemented in `backend/core/llm_client.py` (3,393 lines), this module implement
 
 ```mermaid
 flowchart TD
-    Req["Incoming Solve Request"] --> CheckVision{"Has Image / Diagram?"}
+    Req["Incoming Solve Request"] --> CheckSel{"User Model Selection"}
+    CheckSel -->|Explicit Model| DirectSolve["Execute Selected Model Direct"]
+    CheckSel -->|Auto Mode| PrimaryCascade["Primary Cascade (Groq S-Tier)"]
     
-    CheckVision -->|YES: Mode A Vision Race| VisionRace["Concurrent Dual-Gemini Race<br/>Primary 1: gemini-3.8-flash (Temp 0.1, Budget 2048)<br/>Primary 2: gemini-3.8-flash (Temp 0.2, Budget 1536)"]
-    VisionRace --> VisionCompare{"Both Agree?"}
-    VisionCompare -->|YES| HighVision["HIGH_CONSENSUS / HIGH_VISION_SOLVER<br/>Confidence: 1.0 · Direct Pixel Inspection"]
-    VisionCompare -->|One Hits 429/503| VisionRescue["Instant Survivor Rescue<br/>Surviving Gemini Result Returned"]
-    VisionCompare -->|Disagreement| VisionArbiter["Gemini Arbiter / Vision Fallback"]
+    PrimaryCascade --> ParallelRace["Race Primary A & Primary B Concurrently<br/>Primary A: openai/gpt-oss-120b<br/>Primary B: qwen/qwen3.8-27b"]
+    ParallelRace --> Compare{"Outputs Agree?"}
     
-    CheckVision -->|NO: Mode B Text & Aptitude Race| PrimaryRace["Concurrent Dual-Engine Race<br/>Primary A: gemini-3.8-flash (Adaptive Budget)<br/>Primary B: Groq openai/gpt-oss-120b"]
-    PrimaryRace --> TextCompare{"Outputs Agree?"}
+    Compare -->|YES| HighConsensus["HIGH_CONSENSUS Tier<br/>Confidence: 1.0 · Auto-Eligible: True<br/>Store in Cache"]
+    Compare -->|NO / One Fails| Arbiter["Invoke Arbiter Model<br/>Groq: openai/gpt-oss-20b"]
     
-    TextCompare -->|YES| HighConsensus["HIGH_CONSENSUS Tier<br/>Confidence: 1.0 · Auto-Eligible: True<br/>Store in Cache"]
-    TextCompare -->|NO / Disagreement| Arbiter["Invoke Gemini Arbiter<br/>gemini-3.8-flash (Budget 2048)"]
-    
-    Arbiter --> ArbiterMatch{"Aptitude / Multi-Select Resolution"}
-    ArbiterMatch -->|Multi-Select| MajorityVote["Per-Option 2-of-3 Majority Vote<br/>across (Primary A, Primary B, Arbiter C)"]
-    ArbiterMatch -->|MCQ / Order| MedConsensus["MEDIUM_TIEBREAKER_AGREE Tier<br/>Confidence: 0.67 · Auto-Eligible: True<br/>Store in Cache"]
-    ArbiterMatch -->|All Primaries Down| SearXCheck{"Is Factual Question?"}
+    Arbiter --> ArbiterMatch{"Arbiter Agrees with A or B?"}
+    ArbiterMatch -->|YES| MedConsensus["MEDIUM_TIEBREAKER_AGREE Tier<br/>Confidence: 0.67 · Auto-Eligible: True<br/>Store in Cache"]
+    ArbiterMatch -->|NO| SearXCheck{"Is Factual Question?"}
     
     SearXCheck -->|YES & Circuit Closed| SearX["Query Local SearXNG<br/>Fetch Snippets & Rerun LLM"]
     SearX --> SearXRes{"Search Grounded?"}
@@ -494,18 +489,10 @@ flowchart TD
     HedgeRes -->|NO| Uncertain["UNCERTAIN Status<br/>Confidence: 0.0 · Auto-Eligible: False<br/>Halt Automation"]
 ```
 
-#### 1. Rate-Limit Cooldown & 4-Key Gemini Pool
-- **Gemini Key Pool**: 4 verified Google AI Studio keys (`Standard / Pay-As-You-Go Tier`: 1,000–2,000 RPM, 4M TPM) loaded via `GEMINI_API_KEYS`, deduplicated, and rotated in round-robin order.
-- **Granular Cooldowns**: HTTP 429 triggers an 8.0s cooldown (or honoring `Retry-After`); transient HTTP 503 triggers a 1.5s micro-cooldown with instant sub-5ms rotation to the next key.
-- **Groq & OpenRouter Cooldown**: Sliding window token headers (`x-ratelimit-remaining-tokens`) proactively rotate keys before limits are breached; 429 sets a 12s model cooldown.
-
-#### 2. Adaptive Thinking Budget & Safe Token Bounds
-Gemini 3.8 Flash supports native chain-of-thought tokens via `thinkingConfig`:
-- **Fast Recall Tier (`thinkingBudget = 128`)**: Simple conceptual MCQs (~450–650ms latency).
-- **Analytical Tier (`thinkingBudget = 1024`)**: Multi-select, ordering, and text questions.
-- **Deep Aptitude & Vision Tier (`thinkingBudget = 2048`)**: Activated on image presence, code, or aptitude keywords (permutations, pipes, trains, clock angles, calendars, figure counting).
-- **Safe Output Token Bounds**: `maxOutputTokens >= thinking_budget + 1024`, preventing JSON cutoff.
-- **Multi-Part `"thought": true` Filtering**: Safely extracts the final answer from non-thought parts, filtering out internal thinking parts.
+#### 1. Rate-Limit Cooldown & Key Quarantine
+- **Key Rotation**: Multiple API keys defined in `GROQ_API_KEYS` or `OPENROUTER_API_KEYS` (comma-separated or numbered) rotate in a round-robin cycle.
+- **Provider Cooldown**: If an HTTP 429 (Rate Limit) occurs, the specific `(provider, model_id)` enters a 12-second cooldown without affecting other models or keys.
+- **Key Quarantine**: Keys returning `401 Unauthorized` or quota exhaustion enter a quarantine pool and are bypassed until reset.
 
 #### 2. Model Tier Declarations (`models.json`)
 The cascade configures model weights, timeouts, and token limits:
